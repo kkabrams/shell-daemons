@@ -1,1 +1,29 @@
-/service/gemini/gemini
+#!/bin/bash
+### response code then mime-type
+uri=$(head -n1 | tr -d '\r\n')
+path="$(printf "%s\n" "$uri" | uricut -p)"
+path="$(normalpath "/var/gemini/$path")"
+if ! printf "%s\n" "$path" | grep "^/var/gemini" >/dev/null 2>&1;then
+  printf '59 BAD REQUEST\r\n'
+  exit 1
+fi
+CONTENT_TYPE="$(mime-type "$path")"
+case "$CONTENT_TYPE" in
+  inode/directory)
+    printf "20 text/gemini\r\n"
+    echo $path | grep "^/var/gemini"
+    printf "%s\n" "$uri" | uricut
+    if [ -f "$path/index.gmi" ];then
+      cat "$path/index.gmi"
+    fi
+    find "$path" -type f | cut -d/ -f4- | tr '\n' '\0' | xargs -0 printf '=>%s\n'
+    ;;
+  *)
+    if [ -x "$path" ];then
+      "$path"
+    else
+      printf "20 %s\r\n" "$CONTENT_TYPE"
+      cat -- "$path"
+    fi
+    ;;
+esac

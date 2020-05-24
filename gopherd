@@ -1,1 +1,53 @@
-/service/gopherd/gopherd
+#!/bin/bash
+unset SUDO_GID
+unset SUDO_USER
+unset SUDO_COMMAND
+unset SUDO_UID
+export REMOTE_ADDR=$NCAT_REMOTE_ADDR
+export REMOTE_PORT=$NCAT_REMOTE_PORT
+export SERVER_ADDR=$NCAT_LOCAL_ADDR
+export SERVER_PORT=$NCAT_LOCAL_PORT
+export REMOTE_ADDR=$(/usr/local/libexec/peerip | head -n1)
+export REMOTE_PORT=$(/usr/local/libexec/peerip | tail -n1)
+export SERVER_ADDR=$(/usr/local/libexec/sockip | head -n1)
+export SERVER_PORT=$(/usr/local/libexec/sockip | tail -n1)
+unset NCAT_REMOTE_ADDR
+unset NCAT_REMOTE_PORT
+unset NCAT_LOCAL_ADDR
+unset NCAT_LOCAL_PORT
+unset NCAT_PROTO
+if read -rt 10 REQUEST_URI;then
+  export REQUEST_URI=$(printf '%s\n' "${REQUEST_URI}" | tr -d '\r')
+  cd /var/gopher
+  export SCRIPT_NAME="$(normalpath "/$REQUEST_URI" | tr '?' '\t' | uriunescape | cut -f 1)" #any attempts at ..ing up won't work because normalpath limits it to /
+  export DOCUMENT_ROOT="$(pwd)"
+  export SCRIPT_FILE_NAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_NAME}")"
+  if [ -d "${SCRIPT_FILE_NAME}" ];then
+    cd "${SCRIPT_FILE_NAME}"
+    printf "iThis is epoch's shitty gopher server written in shell script.	.	.	.\r\n"
+    printf "iTake 2.	.	.	.\r\n"
+    printf "iur at: %s	.	.	.\r\n" "$(pwd)"
+    printf "irequest was: %s	.	.	.\r\n" "${REQUEST_URI}"
+    printf "1../	%s	thebackupbox.net	70\r\n" "$(normalpath "/${REQUEST_URI}/..")"
+    find -L -maxdepth 1 -type d | tail -n+2 | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "1%/	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f | grep -v '^._' | grep -v '\.html$' | grep -v '\.png$' | grep -v '\.jpg$' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "0%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -name '*.html' | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "h%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -name '*.png' | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "p%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -name '*.jpg' | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "I%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -name '?_*' | cut -d/ -f2- | grep -v '^0' | tr '\n' '\0' | xargs -0 -n1 -I % printf "%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+#    cat <(find -maxdepth 1 -type f -name '?_*') <(find -maxdepth 1 -type f -name '*.txt') | sort | uniq -d | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "0%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+#    cat <(find -maxdepth 1 -type f -name '?_*') <(find -maxdepth 1 -type f -name '*.html') | sort | uniq -d | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "h%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    printf ".\r\n"
+  elif printf "%s\n" "$REQUEST_URI" | grep "^/cgi-bin/" 2>&1 >/dev/null;then
+    cd cgi-bin
+    export QUERY_STRING="$(printf "$REQUEST_URI" | tr '?' '\t' | cut -f2- | uriunescape)"
+    "$SCRIPT_FILE_NAME"
+  elif [ -f "${SCRIPT_FILE_NAME}" ];then
+    cat "${SCRIPT_FILE_NAME}"
+  else
+    printf "i-d and -f both failed for %s	.	.	.\r\n" "${SCRIPT_FILE_NAME}"
+  fi
+else
+  printf "iThis is epoch's shitty gopher server written in shell script.	.	.	.\r\n"
+  printf "ihurry up with the reqest next time. you have 10 seconds.	.	.	.\r\n"
+fi

@@ -1,1 +1,196 @@
-/service/httpd/httpd
+#!/bin/bash
+export HTTP_DATE="$(date '+%s')"
+unset SUDO_GID
+unset SUDO_USER
+unset SUDO_COMMAND
+unset SUDO_UID
+if [ "$NCAT_REMOTE_ADDR" ];then #if we're being run from netcat...
+  export REMOTE_ADDR=$NCAT_REMOTE_ADDR
+  export REMOTE_PORT=$NCAT_REMOTE_PORT
+  export SERVER_ADDR=$NCAT_LOCAL_ADDR
+  export SERVER_PORT=$NCAT_LOCAL_PORT
+  unset NCAT_REMOTE_ADDR
+  unset NCAT_REMOTE_PORT
+  unset NCAT_LOCAL_ADDR
+  unset NCAT_LOCAL_PORT
+  unset NCAT_PROTO
+fi
+
+if [ "$HTTPS" = on ];then #this gets set in a wrapper script possibly
+  export SCHEME=https
+else
+  export HTTPS=off
+  export SCHEME=http
+  export SERVER_ADDR=$(/usr/local/libexec/sockip | head -n1)
+  export SERVER_PORT=$(/usr/local/libexec/sockip | tail -n1)
+  export REMOTE_ADDR=$(/usr/local/libexec/peerip | head -n1)
+  export REMOTE_PORT=$(/usr/local/libexec/peerip | tail -n1)
+fi
+
+read -rt 10 REQUEST_METHOD REQUEST_URI REQUEST_VERSION || exit 0
+while read -r KEY VALUE;do
+  if [ "$KEY" = $'\r' ];then
+    break
+  fi
+  export HTTP_$(printf "%s\n" "$KEY" | tr -cd 'A-Z0-9a-z-' | tr 'a-z' 'A-Z' | tr '-' '_')="$(printf "%s\n" "$VALUE" | tr -d '\r')"
+done
+logger "httpd $REMOTE_ADDR $REQUEST_METHOD ${SCHEME}://${HTTP_HOST}${REQUEST_URI} $HTTP_USER_AGENT"
+export CONTENT_LENGTH="$HTTP_CONTENT_LENGTH"
+export REQUEST_METHOD
+export REQUEST_URI
+export REQUEST_VERSION
+if printf "%s\n" "$REQUEST_URI" | grep '?' 2>&1 >/dev/null;then
+  export QUERY_STRING="$(printf "%s\n" "$REQUEST_URI" | cut -d? -f2-)"
+fi
+HTTP_HOST="$(printf "%s\n" "$HTTP_HOST" | tr -cd 'a-z.0-9-')"
+if [ "$HTTP_HOST" = ".." ];then
+  export HTTP_HOST=thebackupbox.net
+fi
+cd /var/www/vhosts/${HTTP_HOST} 2>/dev/null || cd /var/www/sites/default
+
+
+export SCRIPT_NAME="$(normalpath "/$REQUEST_URI" | cut -d? -f1 | uriunescape)"
+
+### need to check if SCRIPT_NAME goes into a cgi-bin dir
+### if it does, clip it off at the first / after the script in that dir
+if printf "%s\n" "$SCRIPT_NAME" | grep "^/cgi-bin/" 2>&1 >/dev/null;then
+  export PATH_INFO="$(printf "/%s\n" "$SCRIPT_NAME" | cut -d/ -f4-)"
+  export SCRIPT_NAME="$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f1-3)"
+fi
+
+if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
+  TILDE=$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f2 | tr -cd 'A-Za-z0-9')
+  if ! cd /home/$TILDE/public_html;then
+    printf "HTTP/1.1 404 Not Found\r\n"
+    printf "Content-Type: text/plain\r\n\r\n"
+    echo "this user doesn't have a public html dir."
+    exit 0
+  fi
+fi
+
+export DOCUMENT_ROOT="$(pwd)"
+
+### this is the spot where I need to dereference symlinks SCRIPT_FILENAMEs?
+### SCRIPT_FILENAME gets set in here
+
+
+if [ "$TILDE" ];then
+  export SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)")"
+else
+  export SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_NAME}")"
+fi
+
+### how to figure out if we need to rewrite?
+cat <<COMMENT >/dev/null
+if [ "$(readlink "${SCRIPT_FILENAME}")" != "" ];then
+  ## this should probably not be rewritten
+  #export REQUEST_URI="$(readlink -m "${SCRIPT_FILENAME}")"
+  export REWRITTEN_REQUEST_URI="$(readlink -m "${SCRIPT_FILENAME}")"
+  export SCRIPT_NAME="$(printf "%s\n" "$REWRITTEN_REQUEST_URI" | cut -d? -f1)"
+  export QUERY_STRING="$(printf "%s\n" "$REWRITTEN_REQUEST_URI" | cut -d? -f2-)"
+  export SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_NAME}")"
+  #need to rewrite REQUEST_URI too. >_>
+  printf "HTTP/1.1 200 OK\r\n"
+  printf "Content-Type: text/plain\r\n\r\n"
+  echo $REWRITTEN_REQUEST_URI
+  echo $REQUEST_URI
+  echo $QUERY_STRING
+  echo $SCRIPT_NAME
+  echo $SCRIPT_FILENAME
+  ## rewrites can have their own PATH_INFO and QUERY_STRINGs, so we need to set those now
+  ## the rewrite /could/ also redirect to a ~ path. merp.
+fi
+COMMENT
+
+if [ "$SCRIPT_NAME" = "/" -a "$TILDE" = "" ];then
+  printf "HTTP/1.1 301 Found\r\n"
+  if [ -f "${SCRIPT_FILENAME}/.redirect" ];then
+    printf "Location: %s\r\n" "$(cat "${SCRIPT_FILENAME}/.redirect")"
+  else
+    printf "Location: /index.html\r\n"
+  fi
+  printf "Content-Type: text/html\r\n\r\n"
+  printf "please hold while your call is connected"
+elif printf "%s\n" "$SCRIPT_NAME" | egrep "^/cgi-bin/|^/.well-known/webfinger" 2>&1 >/dev/null;then
+  cd cgi-bin
+  RET_STATUS=200
+  ("$SCRIPT_FILENAME" || printf "Status: 501 Internal Server Error\r\n\r\n") \
+    | while read -r line;do
+        if printf "%s\n" "$line" | grep -i "^Status: " 2>&1 >/dev/null;then
+          RET_STATUS="$(printf "%s\n" "$line" | cut '-d ' -f2-)"
+        else
+          lines="$(printf "%s\n%s\n" "${lines}" "${line}")"
+        fi
+        if [ "$line" = $'\r' ];then
+          printf "HTTP/1.1 %s\r\n" "${RET_STATUS}"
+          printf "%s\n" "$lines" \
+            | tail -n+2
+          dd 2>/dev/null
+          break
+        fi
+      done
+else
+  MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
+  if [ "$MIME_TYPE" = inode/directory ];then
+    if ! printf "${SCRIPT_NAME}" | grep '/$' 2>&1 >/dev/null;then
+      printf "HTTP/1.1 301 Redirect\r\n"
+      printf "Location: %s/\r\n\r\n" "${SCRIPT_NAME}"
+      exit 1
+    fi
+    if [ -e "$(normalpath "${SCRIPT_FILENAME}/.redirect")" ];then
+      printf "HTTP/1.1 307 Temporary Redirect\r\n"
+      printf "Location: %s\r\n" "$(cat "$(normalpath "${SCRIPT_FILENAME}/.redirect")")"
+      printf "Content-Type: text/plain\r\n\r\n"
+      echo what are you looking at?
+    fi
+    if [ ! -e "$(normalpath "${SCRIPT_FILENAME}/index.html")" ];then
+      printf "HTTP/1.1 200 OK\r\n"
+      printf "Content-Type: text/html\r\n\r\n"
+      printf '<html><head><title>%s %s autoindex</title><link rel="stylesheet" type="text/css" href="/style.css" /></head><body>' "${SCRIPT_NAME}" "${SCRIPT_FILENAME}"
+      find "${SCRIPT_FILENAME}" -maxdepth 1 -print0 \
+        | xargs -0 -n1 basename \
+        | tail -n+2 \
+        | tr '\n' '\0' \
+        | xargs -0 -n1 -I _ printf '<a href="%s">%s</a><br/>' _ _
+      printf "</body></html>"
+      exit 0
+    fi
+    # it exists, we're going to use it.
+    SCRIPT_FILENAME="$(normalpath "${SCRIPT_FILENAME}/index.html")"
+    MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
+  fi
+  if [ "$EXT" = "css" ];then
+    MIME_TYPE="text/css"
+  fi
+  if [ "$EXT" = "txt" ];then
+    MIME_TYPE="text/plain"
+  fi
+  if [ "$EXT" = "sh" ];then
+    MIME_TYPE="text/plain"
+  fi
+  if [ "$EXT" = "js" ];then
+    MIME_TYPE="text/javascript"
+  fi
+  if [ -e "${SCRIPT_FILENAME}" ];then
+    printf "HTTP/1.1 200 OK\r\n"
+    printf "Date: %s\r\n" "$(rfc7231date)"
+    printf "Expires: %s\r\n" "$(rfc7231date +3600)"
+    printf "Cache-Control: max-age=3600\r\n"
+    if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
+      printf 'Access-Control-Allow-Origin: *\r\n'
+    fi
+    printf "Content-Type: %s; charset=UTF-8\r\n\r\n" "${MIME_TYPE}"
+    cat "$SCRIPT_FILENAME"
+  else
+    printf "HTTP/1.1 404 Not Found\r\n"
+    printf "Date: %s\r\n" "$(rfc7231date)"
+    if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
+      printf 'Access-Control-Allow-Origin: *\r\n'
+      printf 'Content-Type: application/octet-stream\r\n\r\n'
+      printf 'nothing whatever'
+    else
+      printf "Content-Type: text/plain\r\n\r\n"
+      printf "can't find that shit, yo. %s %s" "$SCRIPT_FILENAME" "${MIME_TYPE}"
+    fi
+  fi
+fi
