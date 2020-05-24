@@ -1,0 +1,15 @@
+#!/bin/sh
+EXT="$(printf "%s" "$1" | rev | cut -d. -f1 | rev)"
+TYPE="$(file -b --mime-type "$1")"
+MAIN="$(printf "%s" "${TYPE}" | cut -d/ -f1)"
+SUB="$(printf "%s" "${TYPE}" | cut -d/ -f2)"
+if [ "_${MAIN}" = "_inode" ];then
+ TYPE="text/plain" 
+fi
+if [ "_${MAIN}" = "_text" -a "_${SUB}" != "_html" ];then
+ TYPE="text/plain"
+fi
+if [ "_${EXT}" = "_css" ];then
+ TYPE="text/css"
+fi
+printf "%s\r\n" "$TYPE"
