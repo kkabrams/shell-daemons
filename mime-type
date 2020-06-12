@@ -1,15 +1,31 @@
 #!/bin/sh
-EXT="$(printf "%s" "$1" | rev | cut -d. -f1 | rev)"
-TYPE="$(file -b --mime-type "$1")"
-MAIN="$(printf "%s" "${TYPE}" | cut -d/ -f1)"
-SUB="$(printf "%s" "${TYPE}" | cut -d/ -f2)"
-if [ "_${MAIN}" = "_inode" ];then
- TYPE="text/plain" 
+MIME_TYPE="$(file --mime-type -L -b "$1")"
+EXT="$(printf '%s\n' "$1" | grep '\.' | rev | cut -d. -f1 | rev)"
+#printf 'type: %s ext: %s\n' $MIME_TYPE $EXT
+### extension based overrides go here
+  if [ "$EXT" = "css" ];then
+    MIME_TYPE="text/css"
+  fi
+  if [ "$EXT" = "txt" ];then
+    MIME_TYPE="text/plain"
+  fi
+  if [ "$EXT" = "sh" ];then
+    MIME_TYPE="text/plain"
+  fi
+  if [ "$EXT" = "js" ];then
+    MIME_TYPE="text/javascript"
+  fi
+  if [ "$EXT" = "svg" ];then
+    MIME_TYPE="image/svg+xml"
+  fi
+  if [ "$EXT" = "hackvr" ];then
+    MIME_TYPE="application/hackvr"
+  fi
+  if [ "$EXT" = "img" ];then
+    MIME_TYPE="application/x86-image"
+  fi
+### derp
+if getfattr -n user.mime-type "$1" >/dev/null 2>&1;then
+  MIME_TYPE="$(getfattr --only-values -n user.mime-type "$1" 2>/dev/null)"
 fi
-if [ "_${MAIN}" = "_text" -a "_${SUB}" != "_html" ];then
- TYPE="text/plain"
-fi
-if [ "_${EXT}" = "_css" ];then
- TYPE="text/css"
-fi
-printf "%s\r\n" "$TYPE"
+printf "%s\n" "${MIME_TYPE}"
