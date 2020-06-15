@@ -62,6 +62,8 @@ if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
   TILDE=$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f2 | tr -cd 'A-Za-z0-9')
   if ! cd /home/$TILDE/public_html;then
     printf "HTTP/1.1 404 Not Found\r\n"
+    printf "X-Content-Type-Options: nosniff\r\n"
+    logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
     printf "Content-Type: text/plain\r\n\r\n"
     echo "this user doesn't have a public html dir."
     exit 0
@@ -104,6 +106,7 @@ COMMENT
 
 if [ "$SCRIPT_NAME" = "/" -a "$TILDE" = "" ];then
   printf "HTTP/1.1 301 Found\r\n"
+  printf "X-Content-Type-Options: nosniff\r\n"
   if [ -f "${SCRIPT_FILENAME}/.redirect" ];then
     printf "Location: %s\r\n" "$(cat "${SCRIPT_FILENAME}/.redirect")"
   else
@@ -111,6 +114,7 @@ if [ "$SCRIPT_NAME" = "/" -a "$TILDE" = "" ];then
   fi
   printf "Content-Type: text/html\r\n\r\n"
   printf "please hold while your call is connected"
+  exit 0
 elif printf "%s\n" "$SCRIPT_NAME" | egrep "^/cgi-bin/|^/.well-known/webfinger" 2>&1 >/dev/null;then
   cd cgi-bin
   RET_STATUS=200
@@ -134,17 +138,23 @@ else
   if [ "$MIME_TYPE" = inode/directory ];then
     if ! printf "${SCRIPT_NAME}" | grep '/$' 2>&1 >/dev/null;then
       printf "HTTP/1.1 301 Redirect\r\n"
+  printf "X-Content-Type-Options: nosniff\r\n"
+      logger "httpd 301 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
       printf "Location: %s/\r\n\r\n" "${SCRIPT_NAME}"
-      exit 1
+      exit 0
     fi
     if [ -e "$(normalpath "${SCRIPT_FILENAME}/.redirect")" ];then
       printf "HTTP/1.1 307 Temporary Redirect\r\n"
+      printf "X-Content-Type-Options: nosniff\r\n"
+      logger "httpd 307 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
       printf "Location: %s\r\n" "$(cat "$(normalpath "${SCRIPT_FILENAME}/.redirect")")"
       printf "Content-Type: text/plain\r\n\r\n"
       echo what are you looking at?
+      exit 0
     fi
     if [ ! -e "$(normalpath "${SCRIPT_FILENAME}/index.html")" ];then
       printf "HTTP/1.1 200 OK\r\n"
+  printf "X-Content-Type-Options: nosniff\r\n"
       printf "Content-Type: text/html\r\n\r\n"
       printf '<html><head><title>%s %s autoindex</title><link rel="stylesheet" type="text/css" href="/style.css" /></head><body>' "${SCRIPT_NAME}" "${SCRIPT_FILENAME}"
       find "${SCRIPT_FILENAME}" -maxdepth 1 -print0 \
@@ -159,20 +169,9 @@ else
     SCRIPT_FILENAME="$(normalpath "${SCRIPT_FILENAME}/index.html")"
     MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
   fi
-  if [ "$EXT" = "css" ];then
-    MIME_TYPE="text/css"
-  fi
-  if [ "$EXT" = "txt" ];then
-    MIME_TYPE="text/plain"
-  fi
-  if [ "$EXT" = "sh" ];then
-    MIME_TYPE="text/plain"
-  fi
-  if [ "$EXT" = "js" ];then
-    MIME_TYPE="text/javascript"
-  fi
   if [ -e "${SCRIPT_FILENAME}" ];then
     printf "HTTP/1.1 200 OK\r\n"
+  printf "X-Content-Type-Options: nosniff\r\n"
     printf "Date: %s\r\n" "$(rfc7231date)"
     printf "Expires: %s\r\n" "$(rfc7231date +3600)"
     printf "Cache-Control: max-age=3600\r\n"
@@ -183,6 +182,8 @@ else
     cat "$SCRIPT_FILENAME"
   else
     printf "HTTP/1.1 404 Not Found\r\n"
+  printf "X-Content-Type-Options: nosniff\r\n"
+    logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
     printf "Date: %s\r\n" "$(rfc7231date)"
     if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
       printf 'Access-Control-Allow-Origin: *\r\n'
