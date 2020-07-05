@@ -24,6 +24,9 @@ EXT="$(printf '%s\n' "$1" | grep '\.' | rev | cut -d. -f1 | rev)"
   if [ "$EXT" = "img" ];then
     MIME_TYPE="application/x86-image"
   fi
+  if [ "$EXT" = "gmi" ];then
+    MIME_TYPE="text/gemini"
+  fi
 ### derp
 if getfattr -n user.mime-type "$1" >/dev/null 2>&1;then
   MIME_TYPE="$(getfattr --only-values -n user.mime-type "$1" 2>/dev/null)"
