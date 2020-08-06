@@ -27,20 +27,21 @@ else
   export REMOTE_PORT=$(/usr/local/libexec/peerip | tail -n1)
 fi
 
-read -rt 10 REQUEST_METHOD REQUEST_URI REQUEST_VERSION || exit 0
+read -rt 10 REQUEST_METHOD REQUEST REQUEST_VERSION || exit 0
 while read -r KEY VALUE;do
   if [ "$KEY" = $'\r' ];then
     break
   fi
   export HTTP_$(printf "%s\n" "$KEY" | tr -cd 'A-Z0-9a-z-' | tr 'a-z' 'A-Z' | tr '-' '_')="$(printf "%s\n" "$VALUE" | tr -d '\r')"
 done
-logger "httpd $REMOTE_ADDR $REQUEST_METHOD ${SCHEME}://${HTTP_HOST}${REQUEST_URI} $HTTP_USER_AGENT"
+export REQUEST_URI="${SCHEME}://${HTTP_HOST}${REQUEST}"
+logger "httpd $REMOTE_ADDR $REQUEST_METHOD ${SCHEME}://${HTTP_HOST}${REQUEST} $HTTP_USER_AGENT"
 export CONTENT_LENGTH="$HTTP_CONTENT_LENGTH"
 export REQUEST_METHOD
 export REQUEST_URI
 export REQUEST_VERSION
 if printf "%s\n" "$REQUEST_URI" | grep '?' 2>&1 >/dev/null;then
-  export QUERY_STRING="$(printf "%s\n" "$REQUEST_URI" | cut -d? -f2-)"
+  export QUERY_STRING="$(printf "%s\n" "$REQUEST" | cut -d? -f2-)"
 fi
 HTTP_HOST="$(printf "%s\n" "$HTTP_HOST" | tr -cd 'a-z.0-9-')"
 if [ "$HTTP_HOST" = ".." ];then
@@ -49,7 +50,7 @@ fi
 cd /var/www/vhosts/${HTTP_HOST} 2>/dev/null || cd /var/www/sites/default
 
 
-export SCRIPT_NAME="$(normalpath "/$REQUEST_URI" | cut -d? -f1 | uriunescape)"
+export SCRIPT_NAME="$(normalpath "/$REQUEST" | cut -d? -f1 | uriunescape)"
 
 ### need to check if SCRIPT_NAME goes into a cgi-bin dir
 ### if it does, clip it off at the first / after the script in that dir
@@ -86,16 +87,16 @@ fi
 cat <<COMMENT >/dev/null
 if [ "$(readlink "${SCRIPT_FILENAME}")" != "" ];then
   ## this should probably not be rewritten
-  #export REQUEST_URI="$(readlink -m "${SCRIPT_FILENAME}")"
-  export REWRITTEN_REQUEST_URI="$(readlink -m "${SCRIPT_FILENAME}")"
-  export SCRIPT_NAME="$(printf "%s\n" "$REWRITTEN_REQUEST_URI" | cut -d? -f1)"
-  export QUERY_STRING="$(printf "%s\n" "$REWRITTEN_REQUEST_URI" | cut -d? -f2-)"
+  #export REQUEST="$(readlink -m "${SCRIPT_FILENAME}")"
+  export REWRITTEN_REQUEST="$(readlink -m "${SCRIPT_FILENAME}")"
+  export SCRIPT_NAME="$(printf "%s\n" "$REWRITTEN_REQUEST" | cut -d? -f1)"
+  export QUERY_STRING="$(printf "%s\n" "$REWRITTEN_REQUEST" | cut -d? -f2-)"
   export SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_NAME}")"
   #need to rewrite REQUEST_URI too. >_>
   printf "HTTP/1.1 200 OK\r\n"
   printf "Content-Type: text/plain\r\n\r\n"
-  echo $REWRITTEN_REQUEST_URI
-  echo $REQUEST_URI
+  echo $REWRITTEN_REQUEST
+  echo $REQUEST
   echo $QUERY_STRING
   echo $SCRIPT_NAME
   echo $SCRIPT_FILENAME
