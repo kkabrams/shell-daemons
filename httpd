@@ -139,7 +139,7 @@ else
   if [ "$MIME_TYPE" = inode/directory ];then
     if ! printf "${SCRIPT_NAME}" | grep '/$' 2>&1 >/dev/null;then
       printf "HTTP/1.1 301 Redirect\r\n"
-  printf "X-Content-Type-Options: nosniff\r\n"
+      printf "X-Content-Type-Options: nosniff\r\n"
       logger "httpd 301 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
       printf "Location: %s/\r\n\r\n" "${SCRIPT_NAME}"
       exit 0
@@ -155,7 +155,7 @@ else
     fi
     if [ ! -e "$(normalpath "${SCRIPT_FILENAME}/index.html")" ];then
       printf "HTTP/1.1 200 OK\r\n"
-  printf "X-Content-Type-Options: nosniff\r\n"
+      printf "X-Content-Type-Options: nosniff\r\n"
       printf "Content-Type: text/html\r\n\r\n"
       printf '<html><head><title>%s %s autoindex</title><link rel="stylesheet" type="text/css" href="/style.css" /></head><body>' "${SCRIPT_NAME}" "${SCRIPT_FILENAME}"
       find "${SCRIPT_FILENAME}" -maxdepth 1 -print0 \
@@ -172,18 +172,35 @@ else
   fi
   if [ -e "${SCRIPT_FILENAME}" ];then
     printf "HTTP/1.1 200 OK\r\n"
-  printf "X-Content-Type-Options: nosniff\r\n"
+    printf "X-Content-Type-Options: nosniff\r\n"
     printf "Date: %s\r\n" "$(rfc7231date)"
     printf "Expires: %s\r\n" "$(rfc7231date +3600)"
     printf "Cache-Control: max-age=3600\r\n"
     if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
       printf 'Access-Control-Allow-Origin: *\r\n'
     fi
-    printf "Content-Type: %s; charset=UTF-8\r\n\r\n" "${MIME_TYPE}"
-    cat "$SCRIPT_FILENAME"
+    ### auto-conversion of other mime-types goes here.
+    if [ "$MIME_TYPE" = "text/gemini" ];then
+      if [ "$QUERY_STRING" = "view-source" ];then
+        printf "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
+        cat "$SCRIPT_FILENAME"
+      elif [ "$QUERY_STRING" = "raw" ];then
+        printf "Content-Type: text/gemini; charset=UTF-8\r\n\r\n"
+        cat "$SCRIPT_FILENAME"
+      else
+        printf "Content-Type: text/html; charset=UTF-8\r\n\r\n"
+        printf '<!DOCTYPE html><html><head><link rel="stylesheet" type="text/css" href=".style.css" /><title>%s</title></head><body>\r\n'
+        cat "$SCRIPT_FILENAME" | gemini2html
+        printf '<a href="?view-source">(view-source)</a><a href="?raw">(raw text/gemini)</a>\r\n'
+        printf "</body></html>\r\n"
+      fi
+    else
+      printf "Content-Type: %s; charset=UTF-8\r\n\r\n" "${MIME_TYPE}"
+      cat "$SCRIPT_FILENAME"
+    fi
   else
     printf "HTTP/1.1 404 Not Found\r\n"
-  printf "X-Content-Type-Options: nosniff\r\n"
+    printf "X-Content-Type-Options: nosniff\r\n"
     logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
     printf "Date: %s\r\n" "$(rfc7231date)"
     if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
