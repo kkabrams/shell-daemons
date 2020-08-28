@@ -61,7 +61,8 @@ fi
 
 if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
   TILDE=$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f2 | tr -cd 'A-Za-z0-9')
-  if ! cd /home/$TILDE/public_html;then
+  TILDE_HOME=$(getent passwd "$TILDE" | cut -d: -f6)
+  if ! cd ${TILDE_HOME}/public_html;then
     printf "HTTP/1.1 404 Not Found\r\n"
     printf "X-Content-Type-Options: nosniff\r\n"
     logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
@@ -199,17 +200,23 @@ else
       cat "$SCRIPT_FILENAME"
     fi
   else
-    printf "HTTP/1.1 404 Not Found\r\n"
-    printf "X-Content-Type-Options: nosniff\r\n"
-    logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
-    printf "Date: %s\r\n" "$(rfc7231date)"
-    if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
-      printf 'Access-Control-Allow-Origin: *\r\n'
-      printf 'Content-Type: application/octet-stream\r\n\r\n'
-      printf 'nothing whatever'
+    ### this is where we fallback to files that don't exist, but maybe we want to redirect it to somewhere...
+    ### should have some way of doing a rewrite per-site
+    if [ -x "${DOCUMENT_ROOT}/.rewrite" ];then ### catch all. wtfever
+      "${DOCUMENT_ROOT}/.rewrite" ### we can use env vars to figure out wtf we need to do from here.
     else
-      printf "Content-Type: text/plain\r\n\r\n"
-      printf "can't find that shit, yo. %s %s" "$SCRIPT_FILENAME" "${MIME_TYPE}"
+      printf "HTTP/1.1 404 Not Found\r\n"
+      printf "X-Content-Type-Options: nosniff\r\n"
+      logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
+      printf "Date: %s\r\n" "$(rfc7231date)"
+      if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
+        printf 'Access-Control-Allow-Origin: *\r\n'
+        printf 'Content-Type: application/octet-stream\r\n\r\n'
+        printf 'nothing whatever'
+      else
+        printf "Content-Type: text/plain\r\n\r\n"
+        printf "can't find that shit, yo. %s %s" "$SCRIPT_FILENAME" "${MIME_TYPE}"
+      fi
     fi
   fi
 fi
