@@ -43,7 +43,7 @@ export REQUEST_VERSION
 if printf "%s\n" "$REQUEST_URI" | grep '?' 2>&1 >/dev/null;then
   export QUERY_STRING="$(printf "%s\n" "$REQUEST" | cut -d? -f2-)"
 fi
-HTTP_HOST="$(printf "%s\n" "$HTTP_HOST" | tr -cd 'a-z.0-9-')"
+HTTP_HOST="$(printf "%s\n" "$HTTP_HOST" | tr -cd 'a-z.0-9\[\]\:-')"
 if [ "$HTTP_HOST" = ".." ];then
   export HTTP_HOST=thebackupbox.net
 fi
