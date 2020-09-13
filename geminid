@@ -2,6 +2,9 @@
 
 export REQUEST_URI=$(head -n1 | tr -d '\r\n')
 
+export SERVER_SOFTWARE="epoch-geminid/0.1"
+export SERVER_PROTOCOL="gemini/0.1"
+
 # if we have SNI, we use that for SERVER_NAME,
 # otherwise we use what was in the gemini request.
 if [ ! "${SSL_TLS_SNI}" ];then
