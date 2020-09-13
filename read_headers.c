@@ -1,5 +1,8 @@
 #include <stdio.h>
 #include <ctype.h> //toupper
+#include <string.h> //strcpy, cat, etc
+#include <stdlib.h> //getenv
+#include <unistd.h> //execv
 
 // this program is to read in headers like the type in:
 // urn:ietf:rfc:3864
@@ -20,11 +23,11 @@ int main(int argc,char *argv[]) {
   char *value;
   strcpy(scheme,getenv("SERVER_PROTOCOL"));
   if(strchr(scheme,'/')) *strchr(scheme,'/')=0;
-  while(fgets(line,sizeof(line)-1,stdin) > 0) {
+  while(fgets(line,sizeof(line)-1,stdin)) {
     if(strchr(line,'\n')) *strchr(line,'\n')=0;
     if(strchr(line,'\r')) *strchr(line,'\r')=0;
     if(!strlen(line)) break;//got a blank line. abort.
-    if(value=strchr(line,':')) {
+    if((value=strchr(line,':'))) {
       *value=0;
       for(value++;*value==' ';value++);
     } else {
