@@ -1,6 +1,6 @@
 PREFIX:=/usr/local
 
-all: read_headers normalpath
+all: read_headers normalpath query_param
 
 install: all
 	install -t $(PREFIX)/libexec read_headers
