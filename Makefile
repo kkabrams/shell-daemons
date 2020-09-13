@@ -1,4 +1,5 @@
 PREFIX:=/usr/local
+CFLAGS=-pedantic -Wall
 
 all: read_headers normalpath query_param
 
