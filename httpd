@@ -273,7 +273,6 @@ COMMENT
       ### should have some way of doing a rewrite per-site
       if [ -x "${DOCUMENT_ROOT}/.rewrite" ];then ### catch all. wtfever
         "${DOCUMENT_ROOT}/.rewrite" ### we can use env vars to figure out wtf we need to do from here.
-	echo $0
       else
         printf "HTTP/1.1 404 Not Found\r\n"
         printf "X-Content-Type-Options: nosniff\r\n"
