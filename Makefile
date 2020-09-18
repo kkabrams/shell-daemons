@@ -7,6 +7,7 @@ all: read_headers normalpath query_param test
 
 install: all
 	install -t $(PREFIX)/libexec read_headers
+	install -t $(PREFIX)/libexec query_param
 	install -t $(PREFIX)/libexec geminid
 	install -t $(PREFIX)/libexec httpd
 	install -t $(PREFIX)/bin mime-type
