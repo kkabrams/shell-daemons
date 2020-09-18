@@ -23,4 +23,7 @@ cat <<EOF \
 ~root		$ROOTHOME	root user home dir
 ~root/derp	$ROOTHOME/derp  root user subdir of home
 ~root/..	$ROOTHOMEPARENT root user parent of home
+/../../../../	/		up many times from root dir
+~in^va#lid	~in^va#lid	invalid user home
+~in^va#lid/derp	~in^va#lid/derp subdir of invalid user home
 EOF
