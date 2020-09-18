@@ -1,3 +1,6 @@
+This isn't /just/ shell-daemons anymore.
+I've included a handful of little C programs that I use inside the shell daemons.
+
 You'll need uritools to get some of these working.
 
 git://thebackupbox.net/uritools
