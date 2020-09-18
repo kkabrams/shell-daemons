@@ -3,7 +3,7 @@ CFLAGS=-pedantic -Wall
 
 .PHONEY: all install test clean
 
-all: read_headers normalpath query_param
+all: read_headers normalpath query_param test
 
 install: all
 	install -t $(PREFIX)/libexec read_headers
@@ -16,6 +16,7 @@ clean:
 	rm normalpath
 	rm read_headers
 	rm query_param
+	rm tests/*.output
 
 test: tests/normalpath.output
 
