@@ -41,9 +41,10 @@ int main(int argc,char *argv[]) {
      strcat(out,"/");
      if(t) s=t+1;
    } else {
-     out=malloc(strlen(argv[1])+1);
      s=argv[1];//let's pretend like we're ignoring ~ now...
-     if(t) *t='/';//undo this too
+     if(t) *t='/';//need to undo this /before/ the malloc to get proper length of argv[1]
+     out=malloc(strlen(argv[1])+1);
+     strcpy(out,"");
    }
    break;
   default:
