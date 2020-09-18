@@ -11,11 +11,16 @@
 int main(int argc,char *argv[]) {
  int i,j,k,l;
  struct passwd *pwd;
+ if(argc < 2) {
+   fprintf(stderr,"usage: normalpath a/path/to/normalize/to/not/include/../../../or///t//h//e//s//e/\n");
+   exit(1);
+ }
  char *s=argv[1];
  char *t;
- char *out=malloc(MAXPATHLEN+1);
+ char *out;
  switch(s[0]) {
   case '/':
+   out=malloc(strlen(argv[1])+1);
    strcpy(out,"/");
    break;
   case '~':
@@ -31,10 +36,12 @@ int main(int argc,char *argv[]) {
      pwd=getpwuid(getuid());//there was a / after the ~
    }
    if(pwd) {
+     out=malloc(strlen(pwd->pw_dir)+strlen(argv[1])+1);//
      strcpy(out,pwd->pw_dir);
      strcat(out,"/");
      if(t) s=t+1;
    } else {
+     out=malloc(strlen(argv[1])+1);
      s=argv[1];//let's pretend like we're ignoring ~ now...
      if(t) *t='/';//undo this too
    }
@@ -42,9 +49,16 @@ int main(int argc,char *argv[]) {
   default:
 //old code, but might be what I decide I /really/ want.
 //   getcwd(out,MAXPATHLEN);
-   if(getenv("PWD")) strcpy(out,getenv("PWD"));
-   strcat(out,"/");
+   if(getenv("PWD")) {
+     out=malloc(strlen(getenv("PWD"))+strlen(argv[1])+1);
+     strcpy(out,getenv("PWD"));
+   } else {
+     out=malloc(strlen(argv[1])+1);
+     strcpy(out,"");
+   }
+   strcat(out,"/");//???
  }
+// the only place the string /might/ get longer is in the previous two cases of and ~
  strcat(out,s);
 #if DEBUG
  printf("%s\n",out);
