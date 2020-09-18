@@ -30,10 +30,14 @@ int main(int argc,char *argv[]) {
    else {
      pwd=getpwuid(getuid());//there was a / after the ~
    }
-   if(!pwd) exit(1);
-   strcpy(out,pwd->pw_dir);
-   strcat(out,"/");
-   if(t) s=t+1;
+   if(pwd) {
+     strcpy(out,pwd->pw_dir);
+     strcat(out,"/");
+     if(t) s=t+1;
+   } else {
+     s=argv[1];//let's pretend like we're ignoring ~ now...
+     if(t) *t='/';//undo this too
+   }
    break;
   default:
 //old code, but might be what I decide I /really/ want.
