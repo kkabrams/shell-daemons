@@ -4,18 +4,36 @@
 #include <unistd.h>
 #include <sys/param.h>
 
+#include <pwd.h> //getpwnam()
+
 #define DEBUG 0
 
 int main(int argc,char *argv[]) {
  int i,j,k,l;
+ struct passwd *pwd;
  char *s=argv[1];
+ char *t;
  char *out=malloc(MAXPATHLEN+1);
  switch(s[0]) {
   case '/':
    strcpy(out,"/");
    break;
   case '~':
-   strcpy(out,(char *)getenv("HOME"));
+   s++;//skip this character.
+   if((t=strchr(s,'/'))) {//if there's a /...
+     *strchr(s,'/')=0;
+   }
+   if(strlen(s)) {
+     pwd=getpwnam(s);
+     s+=strlen(s);//set it to null byte at the end, if there was a /, t will override this later
+   }
+   else {
+     pwd=getpwuid(getuid());//there was a / after the ~
+   }
+   if(!pwd) exit(1);
+   strcpy(out,pwd->pw_dir);
+   strcat(out,"/");
+   if(t) s=t+1;
    break;
   default:
 //old code, but might be what I decide I /really/ want.
@@ -69,6 +87,14 @@ int main(int argc,char *argv[]) {
    }
   }
   i++;
+ }
+ if(out[0] == '/' && out[1] == 0) {
+   //the only case we want the last character to be /
+ }
+ else {//strip the trailing /
+   if(out[strlen(out)-1] == '/') {
+     out[strlen(out)-1]=0;//null it out
+   }
  }
  printf("%s\n",out);
  return 0;
