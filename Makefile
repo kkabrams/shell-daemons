@@ -10,6 +10,7 @@ install: all
 	install -t $(PREFIX)/libexec query_param
 	install -t $(PREFIX)/libexec geminid
 	install -t $(PREFIX)/libexec httpd
+	install -t $(PREFIX)/libexec gopherd
 	install -t $(PREFIX)/bin mime-type
 	install -t $(PREFIX)/bin normalpath
 
