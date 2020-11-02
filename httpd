@@ -1,4 +1,8 @@
 #!/bin/bash
+#printf "HTTP/1.1 200 OK\r\n"
+#printf "Content-Type: text/plain\r\n\r\n"
+#printf "nevermind."
+
 if [ "$1" = "" ];then
 export HTTP_DATE="$(date '+%s')"
 export SERVER_PROTOCOL="HTTP/1.0" #we're not pipelining requests, so probably not 1.1
@@ -9,6 +13,7 @@ unset SUDO_GID
 unset SUDO_USER
 unset SUDO_COMMAND
 unset SUDO_UID
+unset inetd_dummy
 if [ "$NCAT_REMOTE_ADDR" ];then #if we're being run from netcat...
   export REMOTE_ADDR=$NCAT_REMOTE_ADDR
   export REMOTE_PORT=$NCAT_REMOTE_PORT
@@ -65,13 +70,42 @@ export REQUEST_METHOD
 export REQUEST
 export REQUEST_VERSION
 
+### TODO: put the user-dir stuff here so we can drop down into the proper non-root user
+### we don't know what vhost yet because Host: comes after the REQUEST :/
+### let's just assume if tildes are on, it applies to all vhosts.
+### (or we could allow each tilde to have vhost-specific dirs too)
+if printf "%s\n" "$REQUEST" | grep '?' 2>&1 >/dev/null;then
+  export QUERY_STRING="$(printf "%s\n" "$REQUEST" | cut -d? -f2-)"
+fi
+export SCRIPT_NAME="$(normalpath "/$(printf "%s\n" "$REQUEST" | cut -d? -f1 | uriunescape)")"
+
+DROP_TO=www-data
+if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
+  export TILDE=$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f2 | tr -cd 'A-Za-z0-9')
+  DROP_TO="$TILDE"
+  export TILDE_HOME=$(getent passwd "$TILDE" | cut -d: -f6)
+  if ! cd ${TILDE_HOME}/public_html;then
+    printf "HTTP/1.1 404 Not Found\r\n"
+    printf "X-Content-Type-Options: nosniff\r\n"
+    logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
+    printf "Content-Type: text/plain\r\n\r\n"
+    echo "this user doesn't have a public html dir."
+    exit 0
+  fi
+fi
+
 ### stage1 ends here with this exec, which re-execs this script
 ### with "stage2" as an argument
+### if I didn't call read_headers with stdbuf, it was munging stdin
+### and preventing POST data from coming through.
 ################################################################
-exec /usr/local/libexec/read_headers "$0" stage2
+exec supersu "$(id -u "${DROP_TO}")" "$(id -g "${DROP_TO}")" "$(id -g "${DROP_TO}")" `which stdbuf` -i0 -o0 /usr/local/libexec/read_headers "$0" stage2
 ################################################################
 
 elif [ "$1" = "stage2" ];then
+  unset LD_PRELOAD
+  unset _STDBUF_O
+  unset _STDBUF_I
   #!/bin/bash
   export REQUEST_URI="${SCHEME}://${HTTP_HOST}${REQUEST}"
   logger "httpd $REMOTE_ADDR $REQUEST_METHOD ${SCHEME}://${HTTP_HOST}${REQUEST} $HTTP_USER_AGENT"
@@ -79,14 +113,13 @@ elif [ "$1" = "stage2" ];then
   export REQUEST_METHOD
   export REQUEST_URI
   export REQUEST_VERSION
-  if printf "%s\n" "$REQUEST_URI" | grep '?' 2>&1 >/dev/null;then
-    export QUERY_STRING="$(printf "%s\n" "$REQUEST" | cut -d? -f2-)"
-  fi
   HTTP_HOST="$(printf "%s\n" "$HTTP_HOST" | tr -cd 'a-z.0-9\[\]\:-')"
   if [ "$HTTP_HOST" = ".." ];then
     export HTTP_HOST=thebackupbox.net
   fi
-  cd /var/www/vhosts/${HTTP_HOST} 2>/dev/null || cd /var/www/sites/default
+  if [ ! "$TILDE" ];then
+    cd /var/www/vhosts/${HTTP_HOST} 2>/dev/null || cd /var/www/sites/default
+  fi
 
   if [ "$(pwd)" = /var/www/sites/default ];then
     export SERVER_NAME="localhost" #lol. fuck it.
@@ -111,40 +144,36 @@ elif [ "$1" = "stage2" ];then
 
 ### TODO: figure out /why/ I am doing uriunescape here. I don't know why I would.
 ### so, I'm going to disable it until I remember why.
-  export SCRIPT_NAME="$(normalpath "/$REQUEST" | cut -d? -f1)"
-### | uriunescape)"
+### 9/19/2020 I figured out why. I needed to allow stuff like spaces in requests.
+### need to figure out what the proper thing to do is in this case.
+### might be to unescape first, then normalpath it.
 
+### alright. what I'm going to do is to unescape it first.
+### then normalpath it.
+### figure I'll use the space-filled SCRIPT_NAME
+
+export DOCUMENT_ROOT="$(pwd)"
+
+if [ "$TILDE" ];then
+  export SCRIPT_FILENAME="/${DOCUMENT_ROOT}/$(normalpath "/$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)")"
+  export SCRIPT_NAME="/$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)"
+else
+  export SCRIPT_FILENAME="/${DOCUMENT_ROOT}/$(normalpath "/${SCRIPT_NAME}")"
+fi
 ### need to check if SCRIPT_NAME goes into a cgi-bin dir
 ### if it does, clip it off at the first / after the script in that dir
-  if printf "%s\n" "$SCRIPT_NAME" | grep "^/cgi-bin/" 2>&1 >/dev/null;then
-    export PATH_INFO="$(printf "/%s\n" "$SCRIPT_NAME" | cut -d/ -f4-)"
-    export SCRIPT_NAME="$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f1-3)"
-  fi
+if printf "%s\n" "$SCRIPT_NAME" | grep "^/cgi-bin/" 2>&1 >/dev/null;then
+  export PATH_INFO="$(printf "/%s\n" "$SCRIPT_NAME" | cut -d/ -f4-)"
+  export SCRIPT_NAME="$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f1-3)"
+fi
 
-  if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
-    TILDE=$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f2 | tr -cd 'A-Za-z0-9')
-    TILDE_HOME=$(getent passwd "$TILDE" | cut -d: -f6)
-    if ! cd ${TILDE_HOME}/public_html;then
-      printf "HTTP/1.1 404 Not Found\r\n"
-      printf "X-Content-Type-Options: nosniff\r\n"
-      logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
-      printf "Content-Type: text/plain\r\n\r\n"
-      echo "this user doesn't have a public html dir."
-      exit 0
-    fi
-  fi
+### this should get done /before/ we read the headers, that way we can supersu into this user first.
 
-  export DOCUMENT_ROOT="$(pwd)"
 
 ### this is the spot where I need to dereference symlinks SCRIPT_FILENAMEs?
 ### SCRIPT_FILENAME gets set in here
 
 
-  if [ "$TILDE" ];then
-    export SCRIPT_FILENAME="/${DOCUMENT_ROOT}/$(normalpath "/$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)")"
-  else
-    export SCRIPT_FILENAME="/${DOCUMENT_ROOT}/$(normalpath "/${SCRIPT_NAME}")"
-  fi
 
 ### how to figure out if we need to rewrite?
   cat <<COMMENT >/dev/null
@@ -183,9 +212,12 @@ COMMENT
     printf "Content-Type: text/html\r\n\r\n"
     printf "please hold while your call is connected"
     exit 0
-  elif printf "%s\n" "$SCRIPT_NAME" | egrep "^/cgi-bin/|^/.well-known/webfinger" 2>&1 >/dev/null;then
+  elif printf "%s\n" "$SCRIPT_NAME" | egrep "^/cgi-bin/|^/.well-known/webfinger|\.cgi$" 2>&1 >/dev/null;then
     cd cgi-bin
     RET_STATUS=200
+    if [ -e "$SCRIPT_FILENAME.cgi" ];then
+      export SCRIPT_FILENAME=$SCRIPT_FILENAME.cgi
+    fi
     ("$SCRIPT_FILENAME" || printf "Status: 501 Internal Server Error\r\n\r\n") \
       | while read -r line;do
           if printf "%s\n" "$line" | grep -i "^Status: " 2>&1 >/dev/null;then
@@ -204,13 +236,6 @@ COMMENT
   else
     MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
     if [ "$MIME_TYPE" = inode/directory ];then
-      if ! printf "${SCRIPT_NAME}" | grep '/$' 2>&1 >/dev/null;then
-        printf "HTTP/1.1 301 Redirect\r\n"
-        printf "X-Content-Type-Options: nosniff\r\n"
-        logger "httpd 301 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
-        printf "Location: %s/\r\n\r\n" "${SCRIPT_NAME}"
-        exit 0
-      fi
       if [ -e "$(normalpath "${SCRIPT_FILENAME}/.redirect")" ];then
         printf "HTTP/1.1 307 Temporary Redirect\r\n"
         printf "X-Content-Type-Options: nosniff\r\n"
@@ -266,13 +291,51 @@ COMMENT
         fi
       else
         printf "Content-Type: %s; charset=UTF-8\r\n\r\n" "${MIME_TYPE}"
+	#env
         cat "$SCRIPT_FILENAME"
       fi
     else
       ### this is where we fallback to files that don't exist, but maybe we want to redirect it to somewhere...
+      ### first, let's try *.cgi, *.html, *.gmi
+      if [ -x "${SCRIPT_FILENAME}.cgi" ];then
+        printf "HTTP/1.1 200 OK\r\n"
+        echo "todo: implement running this cgi"
+        export SCRIPT_FILENAME="${SCRIPT_FILENAME}.cgi"
+        RET_STATUS=200
+        ("$SCRIPT_FILENAME" || printf "Status: 501 Internal Server Error\r\n\r\n") \
+          | while read -r line;do
+              if printf "%s\n" "$line" | grep -i "^Status: " 2>&1 >/dev/null;then
+                RET_STATUS="$(printf "%s\n" "$line" | cut '-d ' -f2-)"
+              else
+                lines="$(printf "%s\n%s\n" "${lines}" "${line}")"
+              fi
+              if [ "$line" = $'\r' ];then
+                printf "HTTP/1.1 %s\r\n" "${RET_STATUS}"
+                printf "%s\n" "$lines" \
+                  | tail -n+2
+                dd 2>/dev/null
+                break
+              fi
+            done
+        exit 0
+      fi
+      if [ -f "${SCRIPT_FILENAME}.html" ];then
+        printf "HTTP/1.1 200 OK\r\n"
+        printf "Content-Type: text/html\r\n\r\n"
+        cat "${SCRIPT_FILENAME}.html"
+        exit 0
+      fi
+      if [ -f "${SCRIPT_FILENAME}.gmi" ];then
+        printf "HTTP/1.1 200 OK\r\n"
+        printf "Content-Type: text/html\r\n\r\n"
+        cat "${SCRIPT_FILENAME}.gmi" | html_entities_encode | sed 's/=\&gt;/=>/g' | gemini2html "${SCRIPT_FILENAME}.gmi"
+        exit 0
+      fi
       ### should have some way of doing a rewrite per-site
       if [ -x "${DOCUMENT_ROOT}/.rewrite" ];then ### catch all. wtfever
         "${DOCUMENT_ROOT}/.rewrite" ### we can use env vars to figure out wtf we need to do from here.
+	#env
+	#echo $0
       else
         printf "HTTP/1.1 404 Not Found\r\n"
         printf "X-Content-Type-Options: nosniff\r\n"
