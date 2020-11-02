@@ -1,6 +1,7 @@
 #!/bin/bash
 
 export REQUEST_URI=$(head -n1 | tr -d '\r\n')
+logger "geminid: request_uri: $REQUEST_URI"
 
 export SERVER_SOFTWARE="epoch-geminid/0.1"
 export SERVER_PROTOCOL="gemini/0.1"
@@ -42,15 +43,20 @@ fi
 REQUEST_DP="${REQUEST_DOMAIN}:${REQUEST_PORT}"
 SERVER_DP="${SSL_TLS_SNI}:${SERVER_PORT}"
 
+if [ "$SSL_TLS_SNI" = "" ];then
+  SERVER_DP="gemini.thebackupbox.net:1965"
+fi
+
 if [ "${REQUEST_DP}" != "${SERVER_DP}" ];then
   if [ "${SSL_TLS_SNI}" = "epo.k.vu" ];then
     uristart "${REQUEST_URI}" 2>/dev/null
     exit 1
   fi
-  printf "53 PROXY REQUEST REFUSED. I'm not that kind of server. (%s != %s)\r\n" "${REQUEST_DP}" "${SERVER_DP}"
+  printf "53 PROXY REQUEST REFUSED. requested (%s) != sni (%s)\r\n" "${REQUEST_DP}" "${SERVER_DP}"
   exit 1
 fi
 
+logger geminid got request for "$REQUEST_URI" from "${REMOTE_ADDR}"
 
 cd "/var/gemini/vhosts/${SERVER_NAME}" || cd "/var/gemini/sites/default"
 ## and then we set DOCUMENT_ROOT to that dir.
@@ -64,7 +70,7 @@ if grep '^/~' <<< $path 2>&1 >/dev/null ;then
   user="$(printf "%s\n" "$path" | cut -d/ -f2 | tr -cd 'a-zA-Z')"
   path="$(printf "%s\n" "$path" | cut -d/ -f3-)"
   path="$(normalpath "/home/$user/public_gemini/$path")"
-  if ! printf "%s\n" "$path" | grep '^/home/'"$user"'/public_gemini/' >/dev/null 2>&1;then
+  if ! printf "%s/\n" "$path" | grep '^/home/'"$user"'/public_gemini/' >/dev/null 2>&1;then
     printf '59 BAD REQUEST\r\n'
     exit 1
   fi
@@ -80,14 +86,17 @@ if [ -e "$path" ];then
   CONTENT_TYPE="$(mime-type "$path")"
   case "$CONTENT_TYPE" in
     inode/directory)
-      if [ -f $path/.redirect ];then
-        printf "30 %s\r\n" "$(cat "$path/.redirect")"
-        exit 0
-      fi
+     if [ -f $path/.redirect ];then
+       printf "30 %s\r\n" "$(cat "$path/.redirect")"
+       exit 0
+     fi
+     if [ -x "$path/index.cgi" ];then
+       # we don't need to come back from here.
+       exec "$path/index.cgi"
+     fi
+
      printf "20 text/gemini\r\n"
-     ###debug prints go here
-     #printf "remote addr: %s\n" "${REMOTE_ADDR}"
-     #env
+
      if [ -f "$path/index.gmi" ];then
        cat "$path/index.gmi"
      fi
@@ -109,7 +118,7 @@ if [ -e "$path" ];then
        if [ "$user" ];then
          printf "47 CGIs for users not implemented yet\r\n"
        else
-         "$path"
+         exec "$path"
        fi
      else
        printf "20 %s\r\n" "$CONTENT_TYPE"
@@ -118,6 +127,18 @@ if [ -e "$path" ];then
      ;;
   esac
 else
+  if [ -x "$path.cgi" ];then
+    if [ "$user" ];then
+      printf "47 CGIs for users not implemented yet\r\n"
+    else
+      exec "$path.cgi"
+    fi
+  fi
+  if [ -e "${path}.gmi" ];then
+    printf "20 text/gemini\r\n"
+    cat "${path}.gmi"
+    exit 1
+  fi
   if [ -x "${DOCUMENT_ROOT}/.rewrite" ];then
     "${DOCUMENT_ROOT}/.rewrite"
   else
