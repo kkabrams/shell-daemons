@@ -13,6 +13,7 @@ install: all
 	install -t $(PREFIX)/libexec gopherd
 	install -t $(PREFIX)/bin mime-type
 	install -t $(PREFIX)/bin normalpath
+	install -t $(PREFIX)/bin http2gemini
 
 clean:
 	rm normalpath

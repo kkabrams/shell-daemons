@@ -1,0 +1,10 @@
+#!/bin/bash
+curl -Lsi "$1" \
+| while read line;do
+    if printf "%s\n" "$line" | grep -i "^Content-Type: " 2>&1 >/dev/null;then
+      printf "20 %s\r\n" "$(printf "%s\n" "$line" | cut '-d ' -f2-)"
+    fi
+    if [ "$line" = $'\r' ];then
+      exec cat
+    fi
+  done
