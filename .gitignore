@@ -2,3 +2,4 @@ query_param
 normalpath
 read_headers
 tests/normalpath.output
+path_info_find
