@@ -2,10 +2,14 @@
 ### first, we need to get the default value. whatever file --mime-type tells us.
 ### then, we can override that with extension based lookups
 ### last, we check if the file has an extended attribute and use that if it does.
+export LANG=C.UTF-8
 MIME_TYPE="$(file --mime-type -L -b "$1")"
 EXT="$(printf '%s\n' "$1" | grep '\.' | rev | cut -d. -f1 | rev)"
 #printf 'type: %s ext: %s\n' $MIME_TYPE $EXT
 ### extension based overrides go here
+  if [ "$EXT" = "♊︎" ];then
+    MIME_TYPE="text/gemini"
+  fi
   if [ "$EXT" = "css" ];then
     MIME_TYPE="text/css"
   fi
@@ -29,6 +33,9 @@ EXT="$(printf '%s\n' "$1" | grep '\.' | rev | cut -d. -f1 | rev)"
   fi
   if [ "$EXT" = "gmi" ];then
     MIME_TYPE="text/gemini"
+  fi
+  if [ "$EXT" = "irc" ];then
+    MIME_TYPE="text/irc"
   fi
 ### derp
 if getfattr -n user.mime-type "$1" >/dev/null 2>&1;then
