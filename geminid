@@ -1,10 +1,25 @@
 #!/bin/bash
 
-export REQUEST_URI=$(head -n1 | tr -d '\r\n')
-logger "geminid: request_uri: $REQUEST_URI"
-
+export SCHEME="gemini"
 export SERVER_SOFTWARE="epoch-geminid/0.1"
 export SERVER_PROTOCOL="gemini/0.1"
+export LANG=C.UTF-8
+
+read -rt 10 REQUEST_URI
+
+export REQUEST_URI=$(printf "%s\n" "${REQUEST_URI}" | tr -d '\r\n')
+export REQUEST_DOMAIN="$(printf "%s\n" "${REQUEST_URI}" | uricut -d)"
+export REQUEST_PORT="$(printf "%s\n" "${REQUEST_URI}" | uricut -P)"
+export REQUEST_SCHEME="$(printf "%s\n" "${REQUEST_URI}" | uricut -s)"
+
+logger "geminid: request_uri: $REQUEST_URI"
+
+if ! printf "%s\n" "$REQUEST_URI" | urimatch -nf 2>&1 >/dev/null;then
+  logger "geminid: someone requested with fragment!"
+  export REQUEST_URI_ORIGINAL="$REQUEST_URI"
+  export REQUEST_URI="$(printf "%s\n" "$REQUEST_URI" | cut '-d#' -f1)"
+fi
+
 
 # if we have SNI, we use that for SERVER_NAME,
 # otherwise we use what was in the gemini request.
@@ -12,6 +27,10 @@ if [ ! "${SSL_TLS_SNI}" ];then
   export SERVER_NAME="${SSL_TLS_SNI}"
 else
   export SERVER_NAME="$(printf "%s\n" "$REQUEST_URI" | uricut -d)"
+fi
+
+if [ "$SERVER_NAME" = "" ];then
+  export SERVER_NAME=gemini.thebackupbox.net
 fi
 
 # these don't work for stunnel.
@@ -26,13 +45,9 @@ fi
 # usage: ident.sh our-host their-host 113 their-port our-port
 ## not sure exactly what this should contain.
 
-REQUEST_DOMAIN="$(printf "%s\n" "${REQUEST_URI}" | uricut -d)"
-REQUEST_PORT="$(printf "%s\n" "${REQUEST_URI}" | uricut -P)"
-REQUEST_SCHEME="$(printf "%s\n" "${REQUEST_URI}" | uricut -s)"
-
 if [ ! "${REQUEST_PORT}" ];then
   if [ "${REQUEST_SCHEME}" = "gemini" ];then
-    REQUEST_PORT=1965
+    export REQUEST_PORT=1965
   fi
 fi
 
@@ -58,90 +73,137 @@ fi
 
 logger geminid got request for "$REQUEST_URI" from "${REMOTE_ADDR}"
 
-cd "/var/gemini/vhosts/${SERVER_NAME}" || cd "/var/gemini/sites/default"
-## and then we set DOCUMENT_ROOT to that dir.
-export DOCUMENT_ROOT="$(pwd)"
-### response code then mime-type
-path="$(printf "%s\n" "${REQUEST_URI}" | uricut -p)"
-export SCHEME="gemini" #close enough?
-export SCRIPT_NAME="$(printf "%s\n" "$REQUEST_URI" | uricut -p)"
-export QUERY_STRING="$(printf "%s\n" "$REQUEST_URI" | uricut -q)"
-if grep '^/~' <<< $path 2>&1 >/dev/null ;then
-  user="$(printf "%s\n" "$path" | cut -d/ -f2 | tr -cd 'a-zA-Z')"
-  path="$(printf "%s\n" "$path" | cut -d/ -f3-)"
-  path="$(normalpath "/home/$user/public_gemini/$path")"
-  if ! printf "%s/\n" "$path" | grep '^/home/'"$user"'/public_gemini/' >/dev/null 2>&1;then
-    printf '59 BAD REQUEST\r\n'
+export REQUEST_PATH="$(printf "%s\n" "${REQUEST_URI}" | uricut -p)"
+export SCRIPT_NAME="$(normalpath "/$(uriunescape "$REQUEST_PATH")")"
+
+if grep '^/~' <<< "$SCRIPT_NAME" 2>&1 >/dev/null ;then
+  user="$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f2 | tr -cd 'a-zA-Z')"
+  if ! cd "/$(getent passwd "$user" | cut -d: -f6)/public_gemini";then
+    printf '59 BAD REQUEST (guru meditation: 1) "%s"\r\n' "$(getent passwd "$user" | cut -d: -f6)"
     exit 1
   fi
+  ### export SCRIPT_NAME="$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f3-)"
+  export SCRIPT_RELATIVE_FILENAME="$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f3-)"
 else
   unset user
-  path="$(normalpath "${DOCUMENT_ROOT}/$path")"
-  if ! printf "%s\n" "$path" | grep "^${DOCUMENT_ROOT}" >/dev/null 2>&1;then
-    printf '59 BAD REQUEST\r\n'
-    exit 1
-  fi
+  cd "/var/gemini/vhosts/${SERVER_NAME}" || cd "/var/gemini/sites/default"
 fi
-if [ -e "$path" ];then
-  CONTENT_TYPE="$(mime-type "$path")"
+
+export DOCUMENT_ROOT="$(pwd | sed 's|///*|/|g')"
+
+### TODO: if I'm going to guess file extensions I need to take those into account.
+
+if [ "$(path_info_find "${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}")" ];then
+  export PATH_INFO="$(path_info_find "${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}" | tail -n1)"
+  export SCRIPT_FILENAME="$(normalpath "/$(path_info_find "${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}" | head -n1)")"
+else
+  export PATH_INFO=""
+  export SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}")"
+fi
+
+
+#  SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/$SCRIPT_FILENAME")"
+if ! printf "%s\n" "${SCRIPT_FILENAME}" | grep "^${DOCUMENT_ROOT}" >/dev/null 2>&1;then
+  printf '59 BAD REQUEST (guru meditation: 2) "%s" not in "%s"\r\n' "${SCRIPT_FILENAME}" "${DOCUMENT_ROOT}"
+  exit 1
+fi
+
+### response code then mime-type
+### why is script_name and path separate?
+
+### this needs to have the PATH_INFO stripped off. but it isn't used in geminid anyway, so fuck it for now.
+export QUERY_STRING="$(printf "%s\n" "$REQUEST_URI" | uricut -q)"
+
+
+export SCRIPT_FILENAME
+
+#printf "20 text/plain\r\n"
+#env
+
+if [ -e "$SCRIPT_FILENAME" ];then
+  CONTENT_TYPE="$(mime-type "$SCRIPT_FILENAME")"
   case "$CONTENT_TYPE" in
     inode/directory)
-     if [ -f $path/.redirect ];then
-       printf "30 %s\r\n" "$(cat "$path/.redirect")"
+     if ! printf "%s\n" "$REQUEST_URI" | grep '/$' 2>&1 >/dev/null;then
+       printf "31 %s/\r\n" "$REQUEST_URI"
        exit 0
      fi
-     if [ -x "$path/index.cgi" ];then
+     if [ -f $SCRIPT_FILENAME/.redirect ];then
+       printf "30 %s\r\n" "$(cat "$SCRIPT_FILENAME/.redirect")"
+       exit 0
+     fi
+     if [ -x "$SCRIPT_FILENAME/index.cgi" ];then
        # we don't need to come back from here.
-       exec "$path/index.cgi"
+       exec "$SCRIPT_FILENAME/index.cgi" | sed 's/\([^\r]\)$/\1\r/g' #only put the \r if it doesn't happen already
      fi
 
      printf "20 text/gemini\r\n"
 
-     if [ -f "$path/index.gmi" ];then
-       cat "$path/index.gmi"
+     if [ -f "$SCRIPT_FILENAME/index.gmi" ];then
+       cat "$SCRIPT_FILENAME/index.gmi" | sed 's/\([^\r]\)$/\1\r/g'
+       exit 0
      fi
-     if [ -f "$path/.autogen" ];then
+     if [ -f "$SCRIPT_FILENAME/index.♊︎" ];then
+       cat "$SCRIPT_FILENAME/index.♊︎" | sed 's/\([^\r]\)$/\1\r/g'
+       exit 0
+     fi
+     if [ -f "$SCRIPT_FILENAME/.autogen" ];then
        printf "## autogenerated list of stuff in this directory.\r\n"
        if [ "$user" ];then
-         find "$path" -maxdepth 1 -type d | cut -d/ -f5- | grep . | tr '\n' '\0' | xargs -r0 printf "=> /~${user}/%s#dir\r\n"
-         find "$path" -maxdepth 1 -type f | cut -d/ -f5- | grep . | tr '\n' '\0' | xargs -r0 printf "=> /~${user}/%s#file\r\n"
-         find "$path" -maxdepth 1 -type l | cut -d/ -f5- | grep . | tr '\n' '\0' | xargs -r0 printf "=> /~${user}/%s#link\r\n"
+         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type d -print0 | xargs -r0 basename -zas .gmi | xargs -r0 printf "=> %s#dir\r\n"
+         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type f -print0 | xargs -r0 basename -zas .gmi | xargs -r0 printf "=> %s#file\r\n"
+         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type l -print0 | xargs -r0 basename -zas .gmi | xargs -r0 printf "=> %s#link\r\n"
+
+#         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type f | cut -d/ -f5- | grep . | cut -d. -f1 | tr '\n' '\0' | xargs -r0 printf "=> /~${user}/%s#file\r\n"
+#         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type l | cut -d/ -f5- | grep . | cut -d. -f1 | tr '\n' '\0' | xargs -r0 printf "=> /~${user}/%s#link\r\n"
        else
-         find "$path" -maxdepth 1 -type d | cut -d/ -f6- | grep . | tr '\n' '\0' | xargs -r0 printf '=> /%s#dir\r\n'
-         find "$path" -maxdepth 1 -type f | cut -d/ -f6- | grep . | tr '\n' '\0' | xargs -r0 printf '=> /%s#file\r\n'
-         find "$path" -maxdepth 1 -type l | cut -d/ -f6- | grep . | tr '\n' '\0' | xargs -r0 printf '=> /%s#link\r\n'
+         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type d | cut -d/ -f6- | grep . | cut -d. -f1 | tr '\n' '\0' | xargs -r0 printf '=> /%s#dir\r\n'
+         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type f | cut -d/ -f6- | grep . | cut -d. -f1 | tr '\n' '\0' | xargs -r0 printf '=> /%s#file\r\n'
+         find -H "$SCRIPT_FILENAME" -not -path '*/\.*' -maxdepth 1 -type l | cut -d/ -f6- | grep . | cut -d. -f1 | tr '\n' '\0' | xargs -r0 printf '=> /%s#link\r\n'
        fi
+       exit 0
      fi
+     printf "wtf, george?\r\n"
+     env
      ;;
    *)
-     if [ -x "$path" ];then
+     if [ -x "$SCRIPT_FILENAME" ];then
        if [ "$user" ];then
          printf "47 CGIs for users not implemented yet\r\n"
        else
-         exec "$path"
+         exec "$SCRIPT_FILENAME"
        fi
      else
        printf "20 %s\r\n" "$CONTENT_TYPE"
-       cat -- "$path"
+       cat -- "$SCRIPT_FILENAME"
      fi
      ;;
   esac
 else
-  if [ -x "$path.cgi" ];then
+  if [ -x "$SCRIPT_FILENAME.cgi" ];then
     if [ "$user" ];then
       printf "47 CGIs for users not implemented yet\r\n"
     else
-      exec "$path.cgi"
+      exec "$SCRIPT_FILENAME.cgi"
     fi
   fi
-  if [ -e "${path}.gmi" ];then
+  if [ -e "${SCRIPT_FILENAME}.♊︎" ];then
     printf "20 text/gemini\r\n"
-    cat "${path}.gmi"
+    cat "${SCRIPT_FILENAME}.♊︎" | sed 's/\([^\r]\)$/\1\r/g'
+
+    exit 1
+  fi
+  if [ -e "${SCRIPT_FILENAME}.gmi" ];then
+    printf "20 text/gemini\r\n"
+    cat "${SCRIPT_FILENAME}.gmi" | sed 's/\([^\r]\)$/\1\r/g'
+
     exit 1
   fi
   if [ -x "${DOCUMENT_ROOT}/.rewrite" ];then
     "${DOCUMENT_ROOT}/.rewrite"
   else
-    printf "40 text/plain\r\nI don't know what you mean."
+    printf "20 text/plain\r\nI don't know what you mean. %s\r\n" "$SCRIPT_FILENAME"
+    printf "%s\n" "$(date)"
+    env | sort
   fi
 fi
