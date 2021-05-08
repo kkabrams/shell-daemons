@@ -18,8 +18,21 @@ unset NCAT_LOCAL_PORT
 unset NCAT_PROTO
 if read -rt 10 REQUEST_URI;then
   export REQUEST_URI=$(printf '%s\n' "${REQUEST_URI}" | tr -d '\r')
-  cd /var/gopher
-  export SCRIPT_NAME="$(normalpath "/$REQUEST_URI" | tr '?' '\t' | uriunescape | cut -f 1)" #any attempts at ..ing up won't work because normalpath limits it to /
+  export SCRIPT_NAME="$(normalpath "$(uriunescape "/$(printf "%s\n" "$REQUEST_URI" | tr '?' '\t' | cut -f1)")")" #any attempts at ..ing up won't work because normalpath limits it to /
+  if fnmatch '/~*' "$SCRIPT_NAME" >/dev/null;then
+    tilde="$(printf "$SCRIPT_NAME" | cut -d/ -f2)"
+    user="$(printf "%s\n" "$tilde" | cut -d~ -f2)"
+    SCRIPT_NAME="$(printf "$SCRIPT_NAME" | cut -d/ -f3-)"
+    cd "$(getent passwd "$user" | cut -d: -f6)"/public_gopher || exit 0
+    tilde="${tilde}/"
+  else
+    cd /var/gopher
+  fi
+  if [ "$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f2)" == "proxy" ];then
+    proxy_url="$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)"
+    printf "iThis is a test"
+    exit
+  fi
   export DOCUMENT_ROOT="$(pwd)"
   export SCRIPT_FILE_NAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_NAME}")"
   if [ -d "${SCRIPT_FILE_NAME}" ];then
@@ -29,19 +42,22 @@ if read -rt 10 REQUEST_URI;then
     printf "iur at: %s	.	.	.\r\n" "$(pwd)"
     printf "irequest was: %s	.	.	.\r\n" "${REQUEST_URI}"
     printf "1../	%s	thebackupbox.net	70\r\n" "$(normalpath "/${REQUEST_URI}/..")"
-    find -L -maxdepth 1 -type d | tail -n+2 | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "1%/	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
-    find -L -maxdepth 1 -type f | grep -v '^._' | grep -v '\.html$' | grep -v '\.png$' | grep -v '\.jpg$' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "0%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
-    find -L -maxdepth 1 -type f -name '*.html' | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "h%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
-    find -L -maxdepth 1 -type f -name '*.png' | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "p%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
-    find -L -maxdepth 1 -type f -name '*.jpg' | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "I%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
-    find -L -maxdepth 1 -type f -name '?_*' | cut -d/ -f2- | grep -v '^0' | tr '\n' '\0' | xargs -0 -n1 -I % printf "%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
-#    cat <(find -maxdepth 1 -type f -name '?_*') <(find -maxdepth 1 -type f -name '*.txt') | sort | uniq -d | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "0%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
-#    cat <(find -maxdepth 1 -type f -name '?_*') <(find -maxdepth 1 -type f -name '*.html') | sort | uniq -d | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "h%	${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type d -not -path '*/\.*' | tail -n+2 | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "1%/	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -not -path '*/\.*' | grep -v '^._' | grep -v '\.gmi$' | grep -v '\.html$' | grep -v '\.png$' | grep -v '\.jpg$' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "0%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -not -path '*/\.*' -name '*.gmi'  | grep -v '^._' | cut -d/ -f2- | cut -d. -f1 | tr '\n' '\0' | xargs -0 -n1 -I % printf "1%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -not -path '*/\.*' -name '*.html' | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "h%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -not -path '*/\.*' -name '*.png'  | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "p%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -not -path '*/\.*' -name '*.jpg'  | grep -v '^._' | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "I%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+    find -L -maxdepth 1 -type f -not -path '*/\.*' -name '?_*' | cut -d/ -f2- | grep -v '^0' | tr '\n' '\0' | xargs -0 -n1 -I % printf "%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+#    cat <(find -maxdepth 1 -type f -name '?_*') <(find -maxdepth 1 -type f -name '*.txt') | sort | uniq -d | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "0%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
+#    cat <(find -maxdepth 1 -type f -name '?_*') <(find -maxdepth 1 -type f -name '*.html') | sort | uniq -d | cut -d/ -f2- | tr '\n' '\0' | xargs -0 -n1 -I % printf "h%	$tilde${SCRIPT_NAME}/%	thebackupbox.net	70\r\n" | tr -s '/'
     printf ".\r\n"
   elif printf "%s\n" "$REQUEST_URI" | grep "^/cgi-bin/" 2>&1 >/dev/null;then
     cd cgi-bin
     export QUERY_STRING="$(printf "$REQUEST_URI" | tr '?' '\t' | cut -f2- | uriunescape)"
     "$SCRIPT_FILE_NAME"
+  elif [ -f "${SCRIPT_FILE_NAME}.gmi" ];then
+    cat "${SCRIPT_FILE_NAME}.gmi" | gemini2gophermap.pl
   elif [ -f "${SCRIPT_FILE_NAME}" ];then
     cat "${SCRIPT_FILE_NAME}"
   else
