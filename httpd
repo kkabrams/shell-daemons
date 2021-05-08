@@ -1,5 +1,6 @@
 #!/bin/bash
-#printf "HTTP/1.1 200 OK\r\n"
+
+#printf "HTTP/1.0 200 OK\r\n"
 #printf "Content-Type: text/plain\r\n\r\n"
 #printf "nevermind."
 
@@ -7,6 +8,14 @@ if [ "$1" = "" ];then
 export HTTP_DATE="$(date '+%s')"
 export SERVER_PROTOCOL="HTTP/1.0" #we're not pipelining requests, so probably not 1.1
 export SERVER_SOFTWARE="epochttpd/0.1"
+
+#make sure anything used in the second half is exported or it won't be in there because of a couple exec()s
+export usual_headers="$(
+printf "Server: %s\r\n" "$SERVER_SOFTWARE"
+printf "Permissions-Policy: interest-cohort=()\r\n"
+printf "X-Content-Type-Options: nosniff\r\n"
+printf "Date: %s\r\n" "$(rfc7231date)"
+)"
 
 ### this shit doesn't need to be in the httpd. needs to be in a wrapper script.
 unset SUDO_GID
@@ -38,10 +47,6 @@ else
   export REMOTE_PORT=$(/usr/local/libexec/peerip | tail -n1)
 fi
 
-### this stuff can be turned into a separate program
-### the headers need to be exported to the first half of SERVER_PROTOCOL (split on /)
-### like how HTTP_stuff is done. we can do this for gemini too.
-### maybe also mime
 read -rt 10 REQUEST_METHOD REQUEST REQUEST_VERSION || logger "httpd request read timed out"
 
 export REQUEST_VERSION="$(printf "%s\n" "$REQUEST_VERSION" | tr -d '\r')"
@@ -51,7 +56,7 @@ case "${REQUEST_METHOD}" in
 #    logger "httpd got a valid REQUEST_METHOD: ${REQUEST_METHOD}"
   ;;
   *)
-    logger "httpd got an invalid REQUEST_METHOD: ${REQUEST_METHOD}"
+    logger "httpd got an invalid REQUEST_METHOD: '${REQUEST_METHOD}'"
     exit 1
   ;;
 esac
@@ -61,7 +66,7 @@ case "${REQUEST_VERSION}" in
 #    logger "httpd got a valid REQUEST_VERSION: ${REQUEST_VERSION}"
   ;;
   *)
-    logger "httpd got an invalid REQUEST_VERSION: ${REQUEST_VERSION}"
+    logger "httpd got an invalid REQUEST_VERSION: '${REQUEST_VERSION}'"
     exit 1
   ;;
 esac
@@ -77,7 +82,10 @@ export REQUEST_VERSION
 if printf "%s\n" "$REQUEST" | grep '?' 2>&1 >/dev/null;then
   export QUERY_STRING="$(printf "%s\n" "$REQUEST" | cut -d? -f2-)"
 fi
-export SCRIPT_NAME="$(normalpath "/$(printf "%s\n" "$REQUEST" | cut -d? -f1 | uriunescape)")"
+export REQUEST_PATH="$(printf "%s\n" "$REQUEST" | cut -d? -f1 | uriunescape)"
+trailing_slash="$(printf "%s\n" "$REQUEST_PATH" | rev | cut -b1 | rev | grep /)"
+export SCRIPT_NAME="$(normalpath "/$REQUEST_PATH")${trailing_slash}"
+### SCRIPT_NAME doesn't contain the trailing /s that might be useful to know because normalpath strips them out
 
 DROP_TO=www-data
 if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
@@ -85,8 +93,8 @@ if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
   DROP_TO="$TILDE"
   export TILDE_HOME=$(getent passwd "$TILDE" | cut -d: -f6)
   if ! cd ${TILDE_HOME}/public_html;then
-    printf "HTTP/1.1 404 Not Found\r\n"
-    printf "X-Content-Type-Options: nosniff\r\n"
+    printf "%s 404 Not Found\r\n" "${SERVER_PROTOCOL}"
+    echo "$usual_headers"
     logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
     printf "Content-Type: text/plain\r\n\r\n"
     echo "this user doesn't have a public html dir."
@@ -95,20 +103,42 @@ if printf "%s\n" "$SCRIPT_NAME" | grep "^/~" 2>&1 >/dev/null;then
 fi
 
 ### stage1 ends here with this exec, which re-execs this script
+### this is where root privs are dropped too.
 ### with "stage2" as an argument
 ### if I didn't call read_headers with stdbuf, it was munging stdin
 ### and preventing POST data from coming through.
 ################################################################
+################################################################
 exec supersu "$(id -u "${DROP_TO}")" "$(id -g "${DROP_TO}")" "$(id -g "${DROP_TO}")" `which stdbuf` -i0 -o0 /usr/local/libexec/read_headers "$0" stage2
+printf "HTTP/1.1 500 Interla Server Error\r\n"
+printf "Content-Type: text/plain\r\n\r\n"
+printf "the website operator is attempting to run this without having supersu installed."
+logger "httpd is missing supersu. get it."
+exit 1
+################################################################
 ################################################################
 
 elif [ "$1" = "stage2" ];then
+  export HTTP_HOST="$(printf "%s\n" "$HTTP_HOST" | tr -cd 'a-zA-Z0-9.:\[\]-')"
   unset LD_PRELOAD
   unset _STDBUF_O
   unset _STDBUF_I
+
+
   #!/bin/bash
   export REQUEST_URI="${SCHEME}://${HTTP_HOST}${REQUEST}"
   logger "httpd $REMOTE_ADDR $REQUEST_METHOD ${SCHEME}://${HTTP_HOST}${REQUEST} $HTTP_USER_AGENT"
+#  if printf "%s\n" "${HTTP_USER_AGENT}" | grep -i chrome 2>&1 >/dev/null;then
+#    logger "blocking a chrome user"
+#    printf "%s 303 See Other\r\n" "${SERVER_PROTOCOL}"
+#    printf "Location: %s\r\n" "https://en.wikipedia.org/wiki/Chromium_toxicity"
+#    printf "Content-Type: text/plain\r\n\r\n"
+#    printf "just in case your browser didn't follow the redirect..\n"
+#    printf "I'm trying to be clever about your user agent containing 'chrome'\n"
+#    printf "and redirecting you to the wikipedia page for chromium toxicity.\n"
+#    printf "good one, right?"
+#    exit 1
+#  fi
   export CONTENT_LENGTH="$HTTP_CONTENT_LENGTH"
   export REQUEST_METHOD
   export REQUEST_URI
@@ -128,7 +158,7 @@ elif [ "$1" = "stage2" ];then
   fi
 
 #if [ "$REMOTE_ADDR" = 62.209.169.92 ];then
-#  printf "HTTP/1.1 666 WTF\r\n"
+#  printf "%s 666 WTF\r\n" "${SERVER_PROTOCOL}"
 #  logger LOGGED
 #  printf "Content-Type: text/plain\r\n\r\n"
 #  printf "You know I'm watching your requests as they come in, right?\n"
@@ -137,7 +167,7 @@ elif [ "$1" = "stage2" ];then
 #  exit 1
 #fi
 
-#printf "HTTP/1.1 503 Service Unavailable\r\n"
+#printf "%s 503 Service Unavailable\r\n" "${SERVER_PROTOCOL}"
 #printf "Content-Type: text/plain\r\n\r\n"
 #printf "down until I can get 10 minutes to fix a bug."
 #exit 1
@@ -154,26 +184,28 @@ elif [ "$1" = "stage2" ];then
 
 export DOCUMENT_ROOT="$(pwd)"
 
+### DOCUMENT_ROOT/SCRIPT_NAME needs to be passed through a PATH_TRANSLATED as soon as possible
+### HERE EPOCH
+
+### $SCRIPT_NAME needs to have the ~ if the REQUEST_PATH contains it.
+### I'll use $SCRIPT_RELATIVE_FILENAME for what it is with the /~user/ part cut off
+### since that /~user/ translates to picking another document_root
 if [ "$TILDE" ];then
-  export SCRIPT_FILENAME="/${DOCUMENT_ROOT}/$(normalpath "/$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)")"
-  export SCRIPT_NAME="/$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)"
+  export SCRIPT_RELATIVE_FILENAME="$(printf "%s\n" "${SCRIPT_NAME}" | cut -d/ -f3-)"
 else
-  export SCRIPT_FILENAME="/${DOCUMENT_ROOT}/$(normalpath "/${SCRIPT_NAME}")"
-fi
-### need to check if SCRIPT_NAME goes into a cgi-bin dir
-### if it does, clip it off at the first / after the script in that dir
-if printf "%s\n" "$SCRIPT_NAME" | grep "^/cgi-bin/" 2>&1 >/dev/null;then
-  export PATH_INFO="$(printf "/%s\n" "$SCRIPT_NAME" | cut -d/ -f4-)"
-  export SCRIPT_NAME="$(printf "%s\n" "$SCRIPT_NAME" | cut -d/ -f1-3)"
+  export SCRIPT_RELATIVE_FILENAME="$SCRIPT_NAME"
 fi
 
-### this should get done /before/ we read the headers, that way we can supersu into this user first.
-
+if [ "$(path_info_find "${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}")" ];then
+  export PATH_INFO="$(path_info_find "${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}" | tail -n1)"
+  export SCRIPT_FILENAME="$(normalpath "/$(path_info_find "${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}" | head -n1)")"
+else
+  export PATH_INFO=""
+  export SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_RELATIVE_FILENAME}")"
+fi
 
 ### this is the spot where I need to dereference symlinks SCRIPT_FILENAMEs?
 ### SCRIPT_FILENAME gets set in here
-
-
 
 ### how to figure out if we need to rewrite?
   cat <<COMMENT >/dev/null
@@ -185,7 +217,8 @@ fi
     export QUERY_STRING="$(printf "%s\n" "$REWRITTEN_REQUEST" | cut -d? -f2-)"
     export SCRIPT_FILENAME="$(normalpath "/${DOCUMENT_ROOT}/${SCRIPT_NAME}")"
     #need to rewrite REQUEST_URI too. >_>
-    printf "HTTP/1.1 200 OK\r\n"
+    printf "%s 200 OK\r\n" "${SERVER_PROTOCOL}"
+    echo "$usual_headers"
     printf "Content-Type: text/plain\r\n\r\n"
     echo $REWRITTEN_REQUEST
     echo $REQUEST
@@ -201,22 +234,19 @@ COMMENT
     printf "%s <= %s\n" "${REQUEST_URI}" "${HTTP_REFERER}" | tee -a "${DOCUMENT_ROOT}/referers.txt" 2>/dev/null >/dev/null
   fi
 
+### only in the case of a host's root, no tilde
   if [ "$SCRIPT_NAME" = "/" -a "$TILDE" = "" ];then
-    printf "HTTP/1.1 301 Found\r\n"
-    printf "X-Content-Type-Options: nosniff\r\n"
     if [ -f "${SCRIPT_FILENAME}/.redirect" ];then
+      printf "%s 301 Found\r\n" "${SERVER_PROTOCOL}"
+      echo "${usual_headers}"
       printf "Location: %s\r\n" "$(cat "${SCRIPT_FILENAME}/.redirect")"
-    else
-      printf "Location: /index.html\r\n"
+      exit 0
     fi
-    printf "Content-Type: text/html\r\n\r\n"
-    printf "please hold while your call is connected"
-    exit 0
-  elif printf "%s\n" "$SCRIPT_NAME" | egrep "^/cgi-bin/|^/.well-known/webfinger|\.cgi$" 2>&1 >/dev/null;then
-    cd cgi-bin
+  elif [ ! "$PATH_INFO" ] && printf "%s\n" "$SCRIPT_NAME" | egrep "^/cgi-bin/|^/.well-known/webfinger|\.cgi$" 2>&1 >/dev/null;then #only do this if PATH_INFO is empty.
+    cd "${DOCUMENT_ROOT}"/"$(normalpath "$(dirname "${SCRIPT_NAME}")")"
     RET_STATUS=200
     if [ -e "$SCRIPT_FILENAME.cgi" ];then
-      export SCRIPT_FILENAME=$SCRIPT_FILENAME.cgi
+      export SCRIPT_FILENAME="${SCRIPT_FILENAME}.cgi"
     fi
     ("$SCRIPT_FILENAME" || printf "Status: 501 Internal Server Error\r\n\r\n") \
       | while read -r line;do
@@ -226,129 +256,193 @@ COMMENT
             lines="$(printf "%s\n%s\n" "${lines}" "${line}")"
           fi
           if [ "$line" = $'\r' ];then
-            printf "HTTP/1.1 %s\r\n" "${RET_STATUS}"
+            printf "%s %s\r\n" "${SERVER_PROTOCOL}" "${RET_STATUS}"
+            echo "$usual_headers"
             printf "%s\n" "$lines" \
               | tail -n+2
             dd 2>/dev/null
             break
           fi
         done
-  else
-    MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
-    if [ "$MIME_TYPE" = inode/directory ];then
-      if [ -e "$(normalpath "${SCRIPT_FILENAME}/.redirect")" ];then
-        printf "HTTP/1.1 307 Temporary Redirect\r\n"
-        printf "X-Content-Type-Options: nosniff\r\n"
-        logger "httpd 307 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
-        printf "Location: %s\r\n" "$(cat "$(normalpath "${SCRIPT_FILENAME}/.redirect")")"
+	exit 0
+  fi
+  MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
+
+### we check that the path is a dir that exists.
+  if [ "$MIME_TYPE" = inode/directory ];then #don't need this /all/ of the time... lke if it is /
+    if [ ! "$PATH_INFO" ];then # we only need to do this if we aren't fucking with the PATH_INFO
+      if ! printf "%s\n" "$SCRIPT_NAME" | grep '/$' 2>&1 >/dev/null;then #this only applies if we request a dir but don't have the trailing /
+        printf "%s 301 Moved Permanently\r\n" "${SERVER_PROTOCOL}"
+        echo "$usual_headers"
+        printf "Location: %s/\r\n" "$REQUEST"
         printf "Content-Type: text/plain\r\n\r\n"
-        echo what are you looking at?
+        printf "what are you looking at this for? this is a 301 response. shoo.\n"
         exit 0
       fi
-      if [ ! -e "$(normalpath "${SCRIPT_FILENAME}/index.html")" ];then
-        printf "HTTP/1.1 200 OK\r\n"
-        printf "X-Content-Type-Options: nosniff\r\n"
-        printf "Content-Type: text/html\r\n\r\n"
-        printf '<html><head><title>%s %s autoindex</title><link rel="stylesheet" type="text/css" href="/style.css" /></head><body>' "${SCRIPT_NAME}" "${SCRIPT_FILENAME}"
-        find "${SCRIPT_FILENAME}" -maxdepth 1 -print0 \
+    fi
+    if [ -x "$(normalpath "${SCRIPT_FILENAME}/index.cgi")" ];then
+      RET_STATUS=200
+      ("$SCRIPT_FILENAME"/index.cgi || printf "Status: 501 Internal Server Error\r\n\r\n") \
+        | while read -r line;do
+            if printf "%s\n" "$line" | grep -i "^Status: " 2>&1 >/dev/null;then
+              RET_STATUS="$(printf "%s\n" "$line" | cut '-d ' -f2-)"
+            else
+              lines="$(printf "%s\n%s\n" "${lines}" "${line}")"
+            fi
+            if [ "$line" = $'\r' ];then
+              printf "%s %s generic message\r\n" "${SERVER_PROTOCOL}" "${RET_STATUS}"
+              printf "%s\n" "$lines" \
+                | tail -n+2
+              dd 2>/dev/null
+              break
+            fi
+          done
+      exit 0
+    fi
+    if [ -e "$(normalpath "${SCRIPT_FILENAME}/.redirect")" ];then
+      printf "%s 307 Temporary Redirect\r\n" "${SERVER_PROTOCOL}"
+      echo "$usual_headers"
+      logger "httpd 307 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
+      printf "Location: %s\r\n" "$(cat "$(normalpath "${SCRIPT_FILENAME}/.redirect")")"
+      printf "Content-Type: text/plain\r\n\r\n"
+      echo what are you looking at?
+      exit 0
+    fi
+    if [ ! -e "$(normalpath "${SCRIPT_FILENAME}/index.html")" ];then
+      printf "%s 200 OK\r\n" "${SERVER_PROTOCOL}"
+      echo "$usual_headers"
+      printf "Content-Type: text/html\r\n\r\n"
+      printf '<html><head><title>"%s" "%s" autoindex</title><link rel="stylesheet" type="text/css" href="/style.css" /></head><body>' "${SCRIPT_NAME}" "${SCRIPT_FILENAME}"
+      printf '<h1>%s</h1>' "$SCRIPT_NAME"
+      ### we only need to remove the file extensions of the filenames we can guess the extension of
+      find -H "${SCRIPT_FILENAME}" -not -path '*/\.*' -maxdepth 1 -print0 \
           | xargs -0 -n1 basename \
           | tail -n+2 \
+          | sed 's/\.gmi$//g;s/\.html$//g;s/\.cgi$//g;s/\.txt$//g' \
           | tr '\n' '\0' \
           | xargs -0 -n1 -I _ printf '<a href="%s">%s</a><br/>' _ _
-        printf "</body></html>"
-        exit 0
-      fi
-      # it exists, we're going to use it.
-      SCRIPT_FILENAME="$(normalpath "${SCRIPT_FILENAME}/index.html")"
-      MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
+      printf "</body></html>"
+      exit 0
     fi
-    if [ -e "${SCRIPT_FILENAME}" ];then
-      printf "HTTP/1.1 200 OK\r\n"
-      printf "X-Content-Type-Options: nosniff\r\n"
-      printf "Date: %s\r\n" "$(rfc7231date)"
-      printf "Expires: %s\r\n" "$(rfc7231date +3600)"
-      printf "Cache-Control: max-age=3600\r\n"
-      if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
-        printf 'Access-Control-Allow-Origin: *\r\n'
-      fi
-      ### auto-conversion of other mime-types goes here.
-      if [ "$MIME_TYPE" = "text/gemini" ];then
-        if [ "$QUERY_STRING" = "view-source" ];then
-          printf "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
-          cat "$SCRIPT_FILENAME"
-        elif [ "$QUERY_STRING" = "raw" ];then
-          printf "Content-Type: text/gemini; charset=UTF-8\r\n\r\n"
-          cat "$SCRIPT_FILENAME"
-        else
-          printf "Content-Type: text/html; charset=UTF-8\r\n\r\n"
-          printf '<!DOCTYPE html><html><head><link rel="stylesheet" type="text/css" href=".style.css" /><title>%s</title></head><body>\r\n'
+    # it exists, we're going to use it.
+    SCRIPT_FILENAME="$(normalpath "${SCRIPT_FILENAME}/index.html")"
+    MIME_TYPE="$(mime-type "${SCRIPT_FILENAME}")"
+  fi
+
+### first we check that the *exact* filename exists
+  if [ -e "${SCRIPT_FILENAME}" ];then
+    printf "%s 200 OK\r\n" "${SERVER_PROTOCOL}"
+    echo "$usual_headers"
+    printf "Expires: %s\r\n" "$(rfc7231date +3600)"
+    printf "Cache-Control: max-age=3600\r\n"
+    if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
+      printf 'Access-Control-Allow-Origin: *\r\n'
+    fi
+    ### auto-conversion of other mime-types goes here.
+    if [ "$MIME_TYPE" = "text/gemini" ];then
+      if [ "$QUERY_STRING" = "view-source" ];then
+        printf "Content-Length: %s\r\n" "$(wc -c "$SCRIPT_FILENAME" | cut '-d ' -f1 | tr -cd '0-9')"
+        printf "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
+        cat "$SCRIPT_FILENAME"
+      elif [ "$QUERY_STRING" = "raw" ];then
+        printf "Content-Length: %s\r\n" "$(wc -c "$SCRIPT_FILENAME" | cut '-d ' -f1 | tr -cd '0-9')"
+        printf "Content-Type: text/gemini; charset=UTF-8\r\n\r\n"
+        cat "$SCRIPT_FILENAME"
+      else
+        printf "Content-Type: text/html; charset=UTF-8\r\n\r\n"
+        printf '<!DOCTYPE html><html><head><link rel="stylesheet" type="text/css" href=".style.css" /><title>%s</title></head><body>\r\n'
 ### the problem with html encoding it /before/ is that => uses an entity I need to make it safe.
 ### obviously can't do the htmk encoding /after/
 ### not sure if this counts as the "right" way to do it.
-          cat "$SCRIPT_FILENAME" | html_entities_encode | sed 's/^=\&gt;/=>/g' | gemini2html
-          printf '<a href="?view-source">(view-source)</a><a href="?raw">(raw text/gemini)</a>\r\n'
-          printf "</body></html>\r\n"
-        fi
-      else
-        printf "Content-Type: %s; charset=UTF-8\r\n\r\n" "${MIME_TYPE}"
-	#env
-        cat "$SCRIPT_FILENAME"
+        cat "$SCRIPT_FILENAME" | html_entities_encode | sed 's/^=\&gt;/=>/g' | gemini2html
+        printf '<a href="?view-source">(view-source)</a><a href="?raw">(raw text/gemini)</a>\r\n'
+        printf "</body></html>\r\n"
       fi
     else
-      ### this is where we fallback to files that don't exist, but maybe we want to redirect it to somewhere...
-      ### first, let's try *.cgi, *.html, *.gmi
-      if [ -x "${SCRIPT_FILENAME}.cgi" ];then
-        printf "HTTP/1.1 200 OK\r\n"
-        echo "todo: implement running this cgi"
-        export SCRIPT_FILENAME="${SCRIPT_FILENAME}.cgi"
-        RET_STATUS=200
-        ("$SCRIPT_FILENAME" || printf "Status: 501 Internal Server Error\r\n\r\n") \
-          | while read -r line;do
-              if printf "%s\n" "$line" | grep -i "^Status: " 2>&1 >/dev/null;then
-                RET_STATUS="$(printf "%s\n" "$line" | cut '-d ' -f2-)"
-              else
-                lines="$(printf "%s\n%s\n" "${lines}" "${line}")"
-              fi
-              if [ "$line" = $'\r' ];then
-                printf "HTTP/1.1 %s\r\n" "${RET_STATUS}"
-                printf "%s\n" "$lines" \
-                  | tail -n+2
-                dd 2>/dev/null
-                break
-              fi
-            done
-        exit 0
-      fi
-      if [ -f "${SCRIPT_FILENAME}.html" ];then
-        printf "HTTP/1.1 200 OK\r\n"
-        printf "Content-Type: text/html\r\n\r\n"
-        cat "${SCRIPT_FILENAME}.html"
-        exit 0
-      fi
-      if [ -f "${SCRIPT_FILENAME}.gmi" ];then
-        printf "HTTP/1.1 200 OK\r\n"
-        printf "Content-Type: text/html\r\n\r\n"
-        cat "${SCRIPT_FILENAME}.gmi" | html_entities_encode | sed 's/=\&gt;/=>/g' | gemini2html "${SCRIPT_FILENAME}.gmi"
-        exit 0
-      fi
-      ### should have some way of doing a rewrite per-site
-      if [ -x "${DOCUMENT_ROOT}/.rewrite" ];then ### catch all. wtfever
-        "${DOCUMENT_ROOT}/.rewrite" ### we can use env vars to figure out wtf we need to do from here.
-	#env
-	#echo $0
+      printf "Content-Length: %s\r\n" "$(wc -c "$SCRIPT_FILENAME" | cut '-d ' -f1 | tr -cd '0-9')"
+      printf "Content-Type: %s; charset=UTF-8\r\n\r\n" "${MIME_TYPE}"
+      cat "$SCRIPT_FILENAME"
+    fi
+  else
+    ### this is where we fallback to files that don't exist, but maybe we want to redirect it to somewhere...
+    ### first, let's try *.cgi, *.html, *.gmi
+    if [ -x "${SCRIPT_FILENAME}.cgi" ];then
+      cd "$(dirname "${SCRIPT_FILENAME}")"
+#      printf "%s 200 OK\r\n" "${SERVER_PROTOCOL}" ###why is this showing 200? TODO: figure ou
+      export SCRIPT_FILENAME="${SCRIPT_FILENAME}.cgi"
+      RET_STATUS=200
+      ("$SCRIPT_FILENAME" || printf "Status: 501 Internal Server Error\r\n\r\n") \
+        | while read -r line;do
+            if printf "%s\n" "$line" | grep -i "^Status: " 2>&1 >/dev/null;then
+              RET_STATUS="$(printf "%s\n" "$line" | cut '-d ' -f2-)"
+            else
+              lines="$(printf "%s\n%s\n" "${lines}" "${line}")"
+            fi
+            if [ "$line" = $'\r' ];then
+              printf "%s %s generic message\r\n" "${SERVER_PROTOCOL}" "${RET_STATUS}"
+              echo "$usual_headers"
+              printf "%s\n" "$lines" \
+                | tail -n+2
+              dd 2>/dev/null
+              break
+            fi
+          done
+      exit 0
+    fi
+    if [ -f "${SCRIPT_FILENAME}.html" ];then
+      printf "%s 200 OK\r\n" "${SERVER_PROTOCOL}"
+      echo "$usual_headers"
+      printf "Content-Length: %s\r\n" "$(wc -c "${SCRIPT_FILENAME}.html" | cut '-d ' -f1 | tr -cd '0-9')"
+      printf "Content-Type: text/html\r\n\r\n"
+      cat "${SCRIPT_FILENAME}.html"
+      exit 0
+    fi
+    if [ -f "${SCRIPT_FILENAME}.gmi" ];then
+      printf "%s 200 OK\r\n" "${SERVER_PROTOCOL}"
+      echo "$usual_headers"
+      if [ "$QUERY_STRING" = "view-source" ];then
+        printf "Content-Length: %s\r\n" "$(wc -c "${SCRIPT_FILENAME}.gmi" | cut '-d ' -f1 | tr -cd '0-9')"
+        printf "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
+        cat "${SCRIPT_FILENAME}.gmi"
+      elif [ "$QUERY_STRING" = "raw" ];then
+        printf "Content-Length: %s\r\n" "$(wc -c "${SCRIPT_FILENAME}.gmi" | cut '-d ' -f1 | tr -cd '0-9')"
+        printf "Content-Type: text/gemini; charset=UTF-8\r\n\r\n"
+        cat "${SCRIPT_FILENAME}.gmi"
       else
-        printf "HTTP/1.1 404 Not Found\r\n"
-        printf "X-Content-Type-Options: nosniff\r\n"
-        logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
-        printf "Date: %s\r\n" "$(rfc7231date)"
-        if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
-          printf 'Access-Control-Allow-Origin: *\r\n'
-          printf 'Content-Type: application/octet-stream\r\n\r\n'
-          printf 'nothing whatever'
-        else
-          printf "Content-Type: text/plain\r\n\r\n"
-          printf "can't find that shit, yo. %s %s" "$SCRIPT_FILENAME" "${MIME_TYPE}"
-        fi
+        printf "Content-Type: text/html; charset=UTF-8\r\n\r\n"
+        printf '<!DOCTYPE html><html><head><link rel="stylesheet" type="text/css" href=".style.css" /><title>%s</title></head><body>\r\n'
+### the problem with html encoding it /before/ is that => uses an entity I need to make it safe.
+### obviously can't do the htmk encoding /after/
+### not sure if this counts as the "right" way to do it.
+        cat "${SCRIPT_FILENAME}.gmi" | html_entities_encode | sed 's/^=\&gt;/=>/g' | gemini2html
+        printf '<a href="?view-source">(view-source)</a><a href="?raw">(raw text/gemini)</a>\r\n'
+        printf "</body></html>\r\n"
+      fi
+      exit 0
+    fi
+    if [ -f "${SCRIPT_FILENAME}.txt" ];then
+      printf "%s 200 OK\r\n" "${SERVER_PROTOCOL}"
+      echo "$usual_headers"
+      printf "Content-Length: %s\r\n" "$(wc -c "${SCRIPT_FILENAME}.txt" | cut '-d ' -f1 | tr -cd '0-9')"
+      printf "Content-Type: text/plain\r\n\r\n"
+      cat "${SCRIPT_FILENAME}.txt"
+      exit 0
+    fi
+    ### should have some way of doing a rewrite per-site
+    if [ -x "${DOCUMENT_ROOT}/.rewrite" ];then ### catch all. wtfever
+      "${DOCUMENT_ROOT}/.rewrite" ### we can use env vars to figure out wtf we need to do from here.
+    else
+      printf "%s 404 Not Found\r\n" "${SERVER_PROTOCOL}"
+      echo "$usual_headers"
+      logger "httpd 404 for page: ${SCRIPT_NAME} ?${QUERY_STRING}"
+      if printf "%s\n" "${SCRIPT_NAME}" | grep -G '^/\.well-known/openpgpkey/' 2>&1 >/dev/null ;then
+        printf 'Access-Control-Allow-Origin: *\r\n'
+        printf 'Content-Type: application/octet-stream\r\n\r\n'
+        printf 'nothing whatever'
+      else
+        printf "Content-Type: text/plain\r\n\r\n"
+        printf "cant find that shit, yo. %s %s" "$SCRIPT_FILENAME" "${MIME_TYPE}"
+        env | sort
       fi
     fi
   fi
